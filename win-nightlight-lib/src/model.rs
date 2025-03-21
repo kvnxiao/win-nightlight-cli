@@ -1,43 +1,43 @@
 use chrono::{NaiveTime, Timelike};
 use thiserror::Error;
 
-/// These constant bytes identify the beginning of the struct
+/// Identifies the beginning of the struct
 const STRUCT_HEADER_BYTES: [u8; 4] = [0x43, 0x42, 0x01, 0x00];
-/// These constant bytes identify the ending of the struct
+/// Identifies the end of the struct
 const STRUCT_FOOTER_BYTES: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
 
-/// These constant bytes identify the beginning of the timestamp struct
+/// Identifies the beginning of the timestamp struct
 const TIMESTAMP_HEADER_BYTES: [u8; 4] = [0x0A, 0x02, 0x01, 0x00];
-/// These constant bytes exist at the start of the timestamp definition, and is always followed by the actual timestamp value
+/// Identifies the start of the timestamp definition, and is always followed by the actual timestamp value
 const TIMESTAMP_PREFIX_BYTES: [u8; 2] = [0x2A, 0x06];
 /// The size of the timestamp struct in bytes
 const TIMESTAMP_SIZE: usize = 5;
-/// These constant bytes exist at the end of the timestamp definition, and will always be preceded by the timestamp value
+/// Identifies the end of the timestamp definition, and will always be preceded by the timestamp value
 const TIMESTAMP_SUFFIX_BYTES: [u8; 3] = [0x2A, 0x2B, 0x0E];
 
-/// These constant bytes will exist if scheduled mode is enabled in general (regardless if it's sunset to sunrise or set hours)
+/// These constant bytes will exist if scheduled mode is enabled in general (regardless if it's "sunset to sunrise" or "set hours")
 const SCHEDULE_ENABLED_BYTES: [u8; 2] = [0x02, 0x01];
-/// These constant bytes will exist specifically if set hours mode is enabled, and will always be preceded by [SCHEDULE_MODE_ENABLED_BYTES]
+/// These constant bytes will exist specifically if "set hours" mode is enabled, and will always be preceded by [SCHEDULE_ENABLED_BYTES]
 const SCHEDULE_MODE_SET_HOURS_ENABLED_BYTES: [u8; 3] = [0xC2, 0x0A, 0x00];
 
-/// These constant bytes identify the beginning of the start time definition
+/// Identifies where the start time value definition begins
 const SCHEDULE_START_TIME_PREFIX_BYTES: [u8; 2] = [0xCA, 0x14];
-/// These constant bytes identify the beginning of the end time definition
+/// Identifies where the end time value definition begins
 const SCHEDULE_END_TIME_PREFIX_BYTES: [u8; 2] = [0xCA, 0x1E];
-/// This constant byte identifies the next byte as the hour in the schedule time definition
-const TIME_HOUR_IDENTIFIER_PREFIX_BYTE: u8 = 0x0E;
-/// This constant byte identifies the next byte as the minute in the schedule time definition
-const TIME_MINUTE_IDENTIFIER_PREFIX_BYTE: u8 = 0x2E;
-/// These constant bytes identify the beginning of the color temperature definition
+/// Identifies where the sunset time value definition begins
+const SUNSET_TIME_PREFIX_BYTES: [u8; 2] = [0xCA, 0x32];
+/// Identifies where the sunrise time value definition begins
+const SUNRISE_TIME_PREFIX_BYTES: [u8; 2] = [0xCA, 0x3C];
+/// Identifies the next byte as the hour in a time block definition
+const TIME_BLOCK_HOUR_IDENTIFIER_PREFIX_BYTE: u8 = 0x0E;
+/// Identifies the next byte as the minute in a time block definition
+const TIME_BLOCK_MINUTE_IDENTIFIER_PREFIX_BYTE: u8 = 0x2E;
+/// Identifies the end of a time block definition
+const TIME_BLOCK_TERMINAL_BYTE: u8 = 0x00;
+/// Identifies where the color temperature value definition begins
 const COLOR_TEMPERATURE_PREFIX_BYTES: [u8; 2] = [0xCF, 0x28];
 /// The size of the color temperature definition in bytes
 const COLOR_TEMPERATURE_SIZE: usize = 2;
-/// These constant bytes identify the beginning of the sunset time definition
-const SUNSET_TIME_PREFIX_BYTES: [u8; 2] = [0xCA, 0x32];
-/// These constant bytes identify the beginning of the sunrise time definition
-const SUNRISE_TIME_PREFIX_BYTES: [u8; 2] = [0xCA, 0x3C];
-/// This constant byte terminates any time definition
-const TIME_TERMINAL_BYTE: u8 = 0x00;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScheduleMode {
@@ -47,20 +47,20 @@ pub enum ScheduleMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TimeType {
+enum TimeBlockType {
     ScheduleStart,
     ScheduleEnd,
     Sunset,
     Sunrise,
 }
 
-impl TimeType {
+impl TimeBlockType {
     fn get_prefix_identifier(&self) -> [u8; 2] {
         match self {
-            TimeType::ScheduleStart => SCHEDULE_START_TIME_PREFIX_BYTES,
-            TimeType::ScheduleEnd => SCHEDULE_END_TIME_PREFIX_BYTES,
-            TimeType::Sunset => SUNSET_TIME_PREFIX_BYTES,
-            TimeType::Sunrise => SUNRISE_TIME_PREFIX_BYTES,
+            TimeBlockType::ScheduleStart => SCHEDULE_START_TIME_PREFIX_BYTES,
+            TimeBlockType::ScheduleEnd => SCHEDULE_END_TIME_PREFIX_BYTES,
+            TimeBlockType::Sunset => SUNSET_TIME_PREFIX_BYTES,
+            TimeBlockType::Sunrise => SUNRISE_TIME_PREFIX_BYTES,
         }
     }
 }
@@ -82,22 +82,37 @@ impl TimeType {
 /// * if schedule == enabled: then include [SCHEDULE_MODE_ENABLED_BYTES]
 /// * if schedule == enabled and is of type set_hours: then include [SCHEDULE_MODE_SET_HOURS_ENABLED_BYTES]
 /// * [SCHEDULE_START_TIME_PREFIX_BYTES]
-/// * variable encoding for start_time hour and minute
+/// * variable encoding for start_time hour and minute (see below for more info.)
 /// * [TIME_TERMINAL_BYTE]
 /// * [SCHEDULE_END_TIME_PREFIX_BYTES]
-/// * variable encoding for end_time hour and minute
+/// * variable encoding for end_time hour and minute (see below for more info.)
 /// * [TIME_TERMINAL_BYTE]
 /// * [COLOR_TEMPERATURE_PREFIX_BYTES]
 /// * color_temperature in Kelvin (1200-6500), variably encoded into [COLOR_TEMPERATURE_SIZE] bytes
 ///     - byte 0: bit 0 is always unset, bits 1-6 = temperature's bits 0-5, and bit 7 is always set
 ///     - byte 1: temperature's bit 6 and above, top bit not set
 /// * [SUNSET_TIME_PREFIX_BYTES]
-/// * variable encoding for sunset hour and minute
+/// * variable encoding for sunset hour and minute (see below for more info.)
 /// * [TIME_TERMINAL_BYTE]
 /// * [SUNRISE_TIME_PREFIX_BYTES]
-/// * variable encoding for sunrise hour and minute
+/// * variable encoding for sunrise hour and minute (see below for more info.)
 /// * [TIME_TERMINAL_BYTE]
 /// * [STRUCT_FOOTER_BYTES]
+///
+/// In terms of time blocks, the current known types are:
+/// * [TimeBlockType::ScheduleStart]
+/// * [TimeBlockType::ScheduleEnd]
+/// * [TimeBlockType::Sunset]
+/// * [TimeBlockType::Sunrise]
+///
+/// These time blocks are represented in the following variable-length binary format:
+/// * 2 byte constant identifier based on known [TimeBlockType]s
+/// * if hour > 0, then include:
+///   - [TIME_BLOCK_HOUR_IDENTIFIER_PREFIX_BYTE] + hour value as a u8 (in the range of 0-23)
+/// * if minute > 0, then include:
+///   - [TIME_BLOCK_MINUTE_IDENTIFIER_PREFIX_BYTE] + minute value as a u8 (in the range of 0-59)
+/// * [TIME_BLOCK_TERMINAL_BYTE]
+///
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NightlightSettings {
     /// The last-modified Unix timestamp in seconds
@@ -138,11 +153,12 @@ pub enum DeserializationError {
     SunriseTimeBlock,
     #[error("Invalid time value")]
     InvalidTimeValue,
-    #[error("Invalid time")]
+    #[error("Invalid time block")]
     InvalidTimeBlock,
 }
 
 impl NightlightSettings {
+    /// Converts a time block's hour and minute values to a [NaiveTime].
     fn time_to_naive_time(hours: u8, minutes: u8) -> Result<NaiveTime, DeserializationError> {
         NaiveTime::from_hms_opt(u32::from(hours), u32::from(minutes), 0)
             .ok_or(DeserializationError::InvalidTimeValue)
@@ -156,7 +172,7 @@ impl NightlightSettings {
         let mut pos = pos;
 
         // Check if the hour identifier byte exists
-        let start_hour = if data[pos] == TIME_HOUR_IDENTIFIER_PREFIX_BYTE {
+        let start_hour = if data[pos] == TIME_BLOCK_HOUR_IDENTIFIER_PREFIX_BYTE {
             let hour = data[pos + 1];
             pos += 2;
             hour
@@ -168,7 +184,7 @@ impl NightlightSettings {
         }
 
         // Check if the minute identifier byte exists
-        let start_minute = if data[pos] == TIME_MINUTE_IDENTIFIER_PREFIX_BYTE {
+        let start_minute = if data[pos] == TIME_BLOCK_MINUTE_IDENTIFIER_PREFIX_BYTE {
             let minute = data[pos + 1];
             pos += 2;
             minute
@@ -180,12 +196,12 @@ impl NightlightSettings {
         }
 
         // Check if the end of time definition is reached
-        if data[pos] != TIME_TERMINAL_BYTE {
+        if data[pos] != TIME_BLOCK_TERMINAL_BYTE {
             return Err(DeserializationError::InvalidTimeBlock);
         }
 
         // Check end of time definition
-        if data[pos] != TIME_TERMINAL_BYTE {
+        if data[pos] != TIME_BLOCK_TERMINAL_BYTE {
             return Err(DeserializationError::InvalidTimeBlock);
         }
         pos += 1;
@@ -194,24 +210,25 @@ impl NightlightSettings {
     }
 
     /// Converts a [NaiveTime] to the expected binary byte slice representation.
-    fn naive_time_to_bytes(time: NaiveTime, time_type: TimeType) -> Vec<u8> {
+    fn naive_time_to_bytes(time: NaiveTime, time_type: TimeBlockType) -> Vec<u8> {
         let mut bytes = Vec::new();
         let hour = time.hour() as u8;
         let minute = time.minute() as u8;
 
         bytes.extend_from_slice(&time_type.get_prefix_identifier());
         if hour > 0 {
-            bytes.push(TIME_HOUR_IDENTIFIER_PREFIX_BYTE);
+            bytes.push(TIME_BLOCK_HOUR_IDENTIFIER_PREFIX_BYTE);
             bytes.push(hour);
         }
         if minute > 0 {
-            bytes.push(TIME_MINUTE_IDENTIFIER_PREFIX_BYTE);
+            bytes.push(TIME_BLOCK_MINUTE_IDENTIFIER_PREFIX_BYTE);
             bytes.push(minute);
         }
-        bytes.push(TIME_TERMINAL_BYTE);
+        bytes.push(TIME_BLOCK_TERMINAL_BYTE);
         bytes
     }
 
+    /// Parses the struct header block.
     fn parse_struct_header_block(data: &[u8], pos: usize) -> Result<usize, DeserializationError> {
         if data[pos..pos + STRUCT_HEADER_BYTES.len()] != STRUCT_HEADER_BYTES {
             return Err(DeserializationError::StructStart);
@@ -219,7 +236,8 @@ impl NightlightSettings {
         Ok(pos + STRUCT_HEADER_BYTES.len())
     }
 
-    fn parse_timestamp_block(
+    /// Parses the last-modified timestamp block.
+    fn parse_last_modified_timestamp_block(
         data: &[u8],
         start_from: usize,
     ) -> Result<(u64, usize), DeserializationError> {
@@ -251,6 +269,7 @@ impl NightlightSettings {
         Ok((timestamp, pos))
     }
 
+    /// Checks if the schedule is enabled.
     fn parse_is_schedule_enabled_block(data: &[u8], pos: usize) -> (bool, usize) {
         match data[pos..pos + SCHEDULE_ENABLED_BYTES.len()] != SCHEDULE_ENABLED_BYTES {
             true => (false, pos),
@@ -258,6 +277,7 @@ impl NightlightSettings {
         }
     }
 
+    /// Checks if the schedule mode is set to "set hours".
     fn parse_is_schedule_mode_set_hours_enabled_block(data: &[u8], pos: usize) -> (bool, usize) {
         match data[pos..pos + SCHEDULE_MODE_SET_HOURS_ENABLED_BYTES.len()]
             != SCHEDULE_MODE_SET_HOURS_ENABLED_BYTES
@@ -267,18 +287,21 @@ impl NightlightSettings {
         }
     }
 
+    /// Parses an arbitrary time block using the provided [TimeBlockType].
     fn parse_time_type_block(
         data: &[u8],
         pos: usize,
-        time_type: TimeType,
+        time_type: TimeBlockType,
     ) -> Result<(u8, u8, usize), DeserializationError> {
         let prefix_bytes = time_type.get_prefix_identifier();
         if data[pos..pos + prefix_bytes.len()] != prefix_bytes {
             match time_type {
-                TimeType::ScheduleStart => return Err(DeserializationError::ScheduleStartBlock),
-                TimeType::ScheduleEnd => return Err(DeserializationError::ScheduleEndBlock),
-                TimeType::Sunset => return Err(DeserializationError::SunsetTimeBlock),
-                TimeType::Sunrise => return Err(DeserializationError::SunriseTimeBlock),
+                TimeBlockType::ScheduleStart => {
+                    return Err(DeserializationError::ScheduleStartBlock);
+                }
+                TimeBlockType::ScheduleEnd => return Err(DeserializationError::ScheduleEndBlock),
+                TimeBlockType::Sunset => return Err(DeserializationError::SunsetTimeBlock),
+                TimeBlockType::Sunrise => return Err(DeserializationError::SunriseTimeBlock),
             }
         }
         let (hours, minutes, pos) =
@@ -286,6 +309,7 @@ impl NightlightSettings {
         Ok((hours, minutes, pos))
     }
 
+    /// Parses the color temperature block.
     fn parse_color_temperature_block(
         data: &[u8],
         pos: usize,
@@ -315,7 +339,7 @@ impl NightlightSettings {
     /// See [NightlightSettings] for more information about the format.
     pub fn deserialize_from_bytes(data: &[u8]) -> Result<NightlightSettings, DeserializationError> {
         let pos = Self::parse_struct_header_block(data, 0)?;
-        let (timestamp, pos) = Self::parse_timestamp_block(data, pos)?;
+        let (timestamp, pos) = Self::parse_last_modified_timestamp_block(data, pos)?;
 
         // Check if the remaining struct size is valid
         let remaining_struct_size: u8 = data[pos];
@@ -328,14 +352,14 @@ impl NightlightSettings {
         let (is_schedule_mode_set_hours_enabled, pos) =
             Self::parse_is_schedule_mode_set_hours_enabled_block(data, pos);
         let (start_hour, start_minute, pos) =
-            Self::parse_time_type_block(data, pos, TimeType::ScheduleStart)?;
+            Self::parse_time_type_block(data, pos, TimeBlockType::ScheduleStart)?;
         let (end_hour, end_minute, pos) =
-            Self::parse_time_type_block(data, pos, TimeType::ScheduleEnd)?;
+            Self::parse_time_type_block(data, pos, TimeBlockType::ScheduleEnd)?;
         let (color_temperature, pos) = Self::parse_color_temperature_block(data, pos)?;
         let (sunset_hour, sunset_minute, pos) =
-            Self::parse_time_type_block(data, pos, TimeType::Sunset)?;
+            Self::parse_time_type_block(data, pos, TimeBlockType::Sunset)?;
         let (sunrise_hour, sunrise_minute, pos) =
-            Self::parse_time_type_block(data, pos, TimeType::Sunrise)?;
+            Self::parse_time_type_block(data, pos, TimeBlockType::Sunrise)?;
         let pos = Self::parse_struct_footer_block(data, pos)?;
 
         if pos != data.len() {
@@ -435,11 +459,13 @@ impl NightlightSettings {
             }
         }
 
-        let start_time_bytes = Self::naive_time_to_bytes(self.start_time, TimeType::ScheduleStart);
-        let end_time_bytes = Self::naive_time_to_bytes(self.end_time, TimeType::ScheduleEnd);
+        let start_time_bytes =
+            Self::naive_time_to_bytes(self.start_time, TimeBlockType::ScheduleStart);
+        let end_time_bytes = Self::naive_time_to_bytes(self.end_time, TimeBlockType::ScheduleEnd);
         let color_temperature_bytes = self.kelvin_to_bytes();
-        let sunset_time_bytes = Self::naive_time_to_bytes(self.sunset_time, TimeType::Sunset);
-        let sunrise_time_bytes = Self::naive_time_to_bytes(self.sunrise_time, TimeType::Sunrise);
+        let sunset_time_bytes = Self::naive_time_to_bytes(self.sunset_time, TimeBlockType::Sunset);
+        let sunrise_time_bytes =
+            Self::naive_time_to_bytes(self.sunrise_time, TimeBlockType::Sunrise);
 
         remaining_struct_bytes.extend_from_slice(&start_time_bytes);
         remaining_struct_bytes.extend_from_slice(&end_time_bytes);
