@@ -1,0 +1,7 @@
+[package]
+name = "wnl"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+win-nightlight-lib = { path = "../win-nightlight-lib" }
