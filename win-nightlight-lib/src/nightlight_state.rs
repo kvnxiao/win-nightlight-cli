@@ -184,3 +184,71 @@ impl NightlightState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BYTES_DISABLED: [u8; 41] = [
+        0x43, 0x42, 0x01, 0x00, 0x0A, 0x02, 0x01, 0x00, 0x2A, 0x06, 0x89, 0x95, 0xFC, 0xBE,
+        0x06, 0x2A, 0x2B, 0x0E, 0x13, 0x43, 0x42, 0x01, 0x00, 0xD0, 0x0A, 0x02, 0xC6, 0x14,
+        0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE6, 0xED, 0x01, 0x00, 0x00, 0x00, 0x00,
+    ];
+    const BYTES_ENABLED: [u8; 43] = [
+        0x43, 0x42, 0x01, 0x00, 0x0A, 0x02, 0x01, 0x00, 0x2A, 0x06, 0x89, 0x95, 0xFC, 0xBE,
+        0x06, 0x2A, 0x2B, 0x0E, 0x15, 0x43, 0x42, 0x01, 0x00, 0x10, 0x00, 0xD0, 0x0A, 0x02,
+        0xC6, 0x14, 0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE6, 0xED, 0x01, 0x00, 0x00, 0x00,
+        0x00,
+    ];
+
+    #[test]
+    fn test_serialize_to_bytes() {
+        let state_disabled = NightlightState {
+            timestamp: 1742670473,
+            is_enabled: false,
+            remaining_data: [0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA],
+        };
+        let bytes_disabled = state_disabled.serialize_to_bytes();
+        assert_eq!(bytes_disabled, BYTES_DISABLED);
+
+        let state_enabled = NightlightState {
+            timestamp: 1742670473,
+            is_enabled: true,
+            remaining_data: [0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA],
+        };
+        let bytes_enabled = state_enabled.serialize_to_bytes();
+        assert_eq!(bytes_enabled, BYTES_ENABLED);
+    }
+
+    #[test]
+    fn test_deserialize_from_bytes() {
+        let expected_state_disabled = NightlightState {
+            timestamp: 1742670473,
+            is_enabled: false,
+            remaining_data: [0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA],
+        };
+        let state_disabled = NightlightState::deserialize_from_bytes(&BYTES_DISABLED).unwrap();
+        assert_eq!(state_disabled, expected_state_disabled);
+
+        let expected_state_enabled = NightlightState {
+            timestamp: 1742670473,
+            is_enabled: true,
+            remaining_data: [0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA],
+        };
+        let state_enabled = NightlightState::deserialize_from_bytes(&BYTES_ENABLED).unwrap();
+        assert_eq!(state_enabled, expected_state_enabled);
+    }
+
+    #[test]
+    fn test_serde_roundtrip() {
+        let state_disabled = NightlightState::deserialize_from_bytes(&BYTES_DISABLED).unwrap();
+        let bytes = state_disabled.serialize_to_bytes();
+        let state_deserialized = NightlightState::deserialize_from_bytes(&bytes).unwrap();
+        assert_eq!(state_deserialized, state_disabled);
+
+        let state_enabled = NightlightState::deserialize_from_bytes(&BYTES_ENABLED).unwrap();
+        let bytes = state_enabled.serialize_to_bytes();
+        let state_deserialized = NightlightState::deserialize_from_bytes(&bytes).unwrap();
+        assert_eq!(state_deserialized, state_enabled);
+    }
+}
