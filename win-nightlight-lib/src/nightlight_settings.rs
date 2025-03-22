@@ -373,7 +373,7 @@ impl NightlightSettings {
         Ok(settings)
     }
 
-    /// Serializes a [NightlightSettings] struct to a byte slice.
+    /// Serializes a [NightlightSettings] struct into a byte slice.
     /// See [NightlightSettings] for more information about the binary format.
     pub fn serialize_to_bytes(&self) -> Vec<u8> {
         let mut bytes: Vec<u8> = Vec::new();

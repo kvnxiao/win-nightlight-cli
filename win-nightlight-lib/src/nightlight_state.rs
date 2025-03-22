@@ -126,6 +126,8 @@ impl NightlightState {
         })
     }
 
+    /// Serializes a [NightlightState] struct into a byte slice.
+    /// See [NightlightState] for more information about the binary format.
     pub fn serialize_to_bytes(&self) -> Vec<u8> {
         let mut bytes: Vec<u8> = Vec::new();
         bytes.extend_from_slice(&STRUCT_HEADER_BYTES);
