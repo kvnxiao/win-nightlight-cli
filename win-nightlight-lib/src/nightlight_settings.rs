@@ -5,7 +5,8 @@ use crate::{
         timestamp_from_bytes, timestamp_to_bytes,
     },
 };
-use chrono::{NaiveTime, Timelike};
+use chrono::{NaiveTime, Timelike, Utc};
+use thiserror::Error;
 
 /// These constant bytes will exist if scheduled mode is enabled in general (regardless if it's "sunset to sunrise" or "set hours")
 const SCHEDULE_ENABLED_BYTES: [u8; 2] = [0x02, 0x01];
@@ -58,6 +59,12 @@ impl TimeBlockType {
             TimeBlockType::Sunrise => SUNRISE_TIME_PREFIX_BYTES,
         }
     }
+}
+
+#[derive(Error, Debug)]
+pub enum NightlightError {
+    #[error("Invalid color temperature {0}")]
+    InvalidColorTemperature(u16),
 }
 
 /// The windows.data.bluelightreduction.settings data structure has the following binary format:
@@ -413,6 +420,74 @@ impl NightlightSettings {
         bytes.extend(remaining_struct_bytes);
         bytes.extend_from_slice(&STRUCT_FOOTER_BYTES);
         bytes
+    }
+
+    fn update_timestamp(&mut self) {
+        self.timestamp = Utc::now().timestamp() as u64;
+    }
+
+    /// Sets the schedule mode for the night light.
+    pub fn set_mode(&mut self, mode: ScheduleMode) {
+        if self.schedule_mode == mode {
+            return;
+        }
+
+        self.schedule_mode = mode;
+        self.update_timestamp();
+    }
+
+    /// Sets the color temperature for the night light, in a range between 1200 to 6500 Kelvin.
+    pub fn set_color_temperature(&mut self, color_temperature: u16) -> Result<(), NightlightError> {
+        if self.color_temperature == color_temperature {
+            return Ok(());
+        }
+
+        if !(1200..=6500).contains(&color_temperature) {
+            return Err(NightlightError::InvalidColorTemperature(color_temperature));
+        }
+        self.color_temperature = color_temperature;
+        self.update_timestamp();
+        Ok(())
+    }
+
+    /// Sets the start time for the night light's set-hours schedule.
+    pub fn set_start_time(&mut self, start_time: NaiveTime) {
+        if self.start_time == start_time {
+            return;
+        }
+
+        self.start_time = start_time;
+        self.update_timestamp();
+    }
+
+    /// Sets the end time for the night light's set-hours schedule.
+    pub fn set_end_time(&mut self, end_time: NaiveTime) {
+        if self.end_time == end_time {
+            return;
+        }
+
+        self.end_time = end_time;
+        self.update_timestamp();
+    }
+
+    /// Sets the sunset time for the night light's sunset-to-sunrise schedule.
+    pub fn set_sunset_time(&mut self, sunset_time: NaiveTime) {
+        if self.sunset_time == sunset_time {
+            return;
+        }
+
+        self.sunset_time = sunset_time;
+        self.update_timestamp();
+    }
+
+    /// Sets the sunrise time for the night light's sunset-to-sunrise schedule.
+    pub fn set_sunrise_time(&mut self, sunrise_time: NaiveTime) {
+        if self.sunrise_time == sunrise_time {
+            return;
+        }
+
+        self.sunrise_time = sunrise_time;
+        self.update_timestamp();
     }
 }
 

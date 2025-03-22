@@ -1,9 +1,8 @@
+use chrono::Utc;
+
 use crate::{
     consts::*,
-    parser::{
-        DeserializationError, get_current_timestamp, parse_last_modified_timestamp_block,
-        timestamp_to_bytes,
-    },
+    parser::{DeserializationError, parse_last_modified_timestamp_block, timestamp_to_bytes},
 };
 
 /// These constant bytes will exist if the nightlight state is enabled
@@ -153,27 +152,33 @@ impl NightlightState {
         bytes
     }
 
+    fn update_timestamp(&mut self) {
+        self.timestamp = Utc::now().timestamp() as u64;
+    }
+
     /// Enables the nightlight and updates the timestamp.
     /// Returns true if a change was made (i.e. the nightlight was previously disabled).
-    pub fn enable(&mut self) -> Result<bool, DeserializationError> {
-        if !self.is_enabled {
-            self.timestamp = get_current_timestamp()?;
-            self.is_enabled = true;
-            Ok(true)
-        } else {
-            Ok(false)
+    pub fn enable(&mut self) -> bool {
+        match !self.is_enabled {
+            true => {
+                self.is_enabled = true;
+                self.update_timestamp();
+                true
+            }
+            false => false,
         }
     }
 
     /// Disables the nightlight and updates the timestamp.
     /// Returns true if a change was made (i.e. the nightlight was previously enabled).
-    pub fn disable(&mut self) -> Result<bool, DeserializationError> {
-        if self.is_enabled {
-            self.timestamp = get_current_timestamp()?;
-            self.is_enabled = false;
-            Ok(true)
-        } else {
-            Ok(false)
+    pub fn disable(&mut self) -> bool {
+        match self.is_enabled {
+            true => {
+                self.is_enabled = false;
+                self.update_timestamp();
+                true
+            }
+            false => false,
         }
     }
 }
