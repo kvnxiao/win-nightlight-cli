@@ -1,7 +1,7 @@
-use chrono::NaiveTime;
-use thiserror::Error;
-
 use crate::consts::*;
+use chrono::NaiveTime;
+use std::time::{SystemTime, UNIX_EPOCH};
+use thiserror::Error;
 
 /// Errors that can occur when deserializing a [NightlightSettings] struct from a byte slice.
 #[derive(Error, Debug)]
@@ -18,14 +18,19 @@ pub enum DeserializationError {
     InvalidBlock(String),
     #[error("Invalid time value")]
     InvalidTimeValue,
-    #[error("Invalid time block")]
-    InvalidTimeBlock,
 }
 
 /// Converts a time block's hour and minute values to a [NaiveTime].
 pub fn time_to_naive_time(hours: u8, minutes: u8) -> Result<NaiveTime, DeserializationError> {
     NaiveTime::from_hms_opt(u32::from(hours), u32::from(minutes), 0)
         .ok_or(DeserializationError::InvalidTimeValue)
+}
+
+pub fn get_current_timestamp() -> Result<u64, DeserializationError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| DeserializationError::InvalidTimeValue)
 }
 
 /// Converts a Unix timestamp to a 5-byte array using a variable-length encoding scheme.

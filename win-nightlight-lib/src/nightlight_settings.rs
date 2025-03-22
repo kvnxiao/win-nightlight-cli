@@ -1,5 +1,3 @@
-use chrono::{NaiveTime, Timelike};
-
 use crate::{
     consts::*,
     parser::{
@@ -7,6 +5,7 @@ use crate::{
         timestamp_from_bytes, timestamp_to_bytes,
     },
 };
+use chrono::{NaiveTime, Timelike};
 
 /// These constant bytes will exist if scheduled mode is enabled in general (regardless if it's "sunset to sunrise" or "set hours")
 const SCHEDULE_ENABLED_BYTES: [u8; 2] = [0x02, 0x01];
@@ -144,7 +143,9 @@ impl NightlightSettings {
             0
         };
         if start_hour >= 24 {
-            return Err(DeserializationError::InvalidTimeBlock);
+            return Err(DeserializationError::InvalidBlock(
+                "TimeBlockHourValue".into(),
+            ));
         }
 
         // Check if the minute identifier byte exists
@@ -156,17 +157,16 @@ impl NightlightSettings {
             0
         };
         if start_minute >= 60 {
-            return Err(DeserializationError::InvalidTimeBlock);
+            return Err(DeserializationError::InvalidBlock(
+                "TimeBlockMinuteValue".into(),
+            ));
         }
 
         // Check if the end of time definition is reached
         if data[pos] != TIME_BLOCK_TERMINAL_BYTE {
-            return Err(DeserializationError::InvalidTimeBlock);
-        }
-
-        // Check end of time definition
-        if data[pos] != TIME_BLOCK_TERMINAL_BYTE {
-            return Err(DeserializationError::InvalidTimeBlock);
+            return Err(DeserializationError::InvalidBlock(
+                "TimeBlockTerminal".into(),
+            ));
         }
         pos += 1;
 
