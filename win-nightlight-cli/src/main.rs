@@ -1,17 +1,85 @@
+use anyhow::{Result, anyhow};
+use clap::{Parser, Subcommand, command};
+use std::str::FromStr;
 use win_nightlight_lib::{
-    get_nightlight_settings, get_nightlight_state, nightlight_settings::NightlightSettings,
-    nightlight_state::NightlightState,
+    get_nightlight_settings, get_nightlight_state, nightlight_settings::ScheduleMode,
+    set_nightlight_settings, set_nightlight_state,
 };
 
-fn main() {
-    let raw_settings = get_nightlight_settings().unwrap();
-    let settings_to_bytes = raw_settings.serialize_to_bytes();
-    let deserialized_settings =
-        NightlightSettings::deserialize_from_bytes(&settings_to_bytes).unwrap();
-    assert_eq!(raw_settings, deserialized_settings);
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+#[command(propagate_version = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
 
-    let raw_state = get_nightlight_state().unwrap();
-    let state_to_bytes = raw_state.serialize_to_bytes();
-    let deserialized_state = NightlightState::deserialize_from_bytes(&state_to_bytes).unwrap();
-    assert_eq!(raw_state, deserialized_state);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Schedule {
+    Off,
+    Solar,
+    Manual,
+}
+
+impl FromStr for Schedule {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "off" => Schedule::Off,
+            "solar" => Schedule::Solar,
+            "manual" => Schedule::Manual,
+            _ => anyhow::bail!("Valid modes are: 'off', 'solar', and 'manual'"),
+        })
+    }
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Temp {
+        #[arg(index = 1)]
+        temperature: u16,
+    },
+    Schedule {
+        #[arg(index = 1)]
+        mode: Schedule,
+    },
+    On,
+    Off,
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let mut settings = get_nightlight_settings()
+        .map_err(|e| anyhow!("Failed to read nightlight settings: {}", e))?;
+    let mut state =
+        get_nightlight_state().map_err(|e| anyhow!("Failed to read nightlight state: {}", e))?;
+
+    match cli.command {
+        Some(Commands::Temp { temperature }) => {
+            settings.set_color_temperature(temperature)?;
+            set_nightlight_settings(&settings)?;
+        }
+        Some(Commands::Schedule { mode }) => {
+            match mode {
+                Schedule::Off => settings.set_mode(ScheduleMode::Off),
+                Schedule::Solar => settings.set_mode(ScheduleMode::SunsetToSunrise),
+                Schedule::Manual => settings.set_mode(ScheduleMode::SetHours),
+            }
+            set_nightlight_settings(&settings)?;
+        }
+        Some(Commands::On) => {
+            state.enable();
+            set_nightlight_state(&state)?;
+        }
+        Some(Commands::Off) => {
+            state.disable();
+            set_nightlight_state(&state)?;
+        }
+        None => {
+            println!("{:#?}", settings);
+            println!("{:#?}", state);
+        }
+    }
+    Ok(())
 }

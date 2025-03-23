@@ -7,9 +7,6 @@ use crate::{
 
 /// These constant bytes will exist if the nightlight state is enabled
 const NIGHTLIGHT_STATE_ENABLED_BYTES: [u8; 2] = [0x10, 0x00];
-const REMAINING_DATA_BYTES_HEADER: [u8; 5] = [0xD0, 0x0A, 0x02, 0xC6, 0x14];
-const REMAINING_DATA_BYTES_BODY_SIZE: usize = 6;
-const REMAINING_DATA_BYTES_FOOTER: [u8; 3] = [0xE6, 0xED, 0x01];
 
 /// The windows.data.bluelightreduction.bluelightreductionstate data structure has the following binary format:
 ///
@@ -29,9 +26,7 @@ const REMAINING_DATA_BYTES_FOOTER: [u8; 3] = [0xE6, 0xED, 0x01];
 ///         - 0x15: is_enabled = false
 /// * [STRUCT_HEADER_BYTES] again
 /// * if is_enabled = true, then include [NIGHTLIGHT_STATE_ENABLED_BYTES]
-/// * [REMAINING_DATA_BYTES_HEADER]
 /// * unknown bytes of size [REMAINING_DATA_BYTES_BODY_SIZE] with values that change over time
-/// * [REMAINING_DATA_BYTES_FOOTER]
 /// * [STRUCT_FOOTER_BYTES]
 ///
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,7 +37,7 @@ pub struct NightlightState {
     /// If true, then the nightlight will be enabled regardless of the schedule settings.
     pub is_enabled: bool,
     /// The remaining data bytes read from the registry
-    remaining_data: [u8; 6],
+    remaining_data: Vec<u8>,
 }
 
 impl NightlightState {
@@ -71,31 +66,15 @@ impl NightlightState {
         }
     }
 
+    /// Read the remaining data bytes and save it if we need to write it back
     fn parse_remaining_data_block(
         data: &[u8],
         pos: usize,
-    ) -> Result<([u8; 6], usize), DeserializationError> {
-        let mut pos = pos;
-        if data[pos..pos + REMAINING_DATA_BYTES_HEADER.len()] != REMAINING_DATA_BYTES_HEADER {
-            return Err(DeserializationError::InvalidBlock(
-                "RemainingDataHeader".into(),
-            ));
-        }
-        pos += REMAINING_DATA_BYTES_HEADER.len();
-
-        // Read the remaining data bytes and save it if we need to write it back
-        let remaining_data_bytes: [u8; 6] = data[pos..pos + REMAINING_DATA_BYTES_BODY_SIZE]
-            .try_into()
-            .map_err(|_| DeserializationError::InvalidBlock("RemainingDataBody".into()))?;
-        pos += REMAINING_DATA_BYTES_BODY_SIZE;
-
-        if data[pos..pos + REMAINING_DATA_BYTES_FOOTER.len()] != REMAINING_DATA_BYTES_FOOTER {
-            return Err(DeserializationError::InvalidBlock(
-                "RemainingDataFooter".into(),
-            ));
-        }
-        pos += REMAINING_DATA_BYTES_FOOTER.len();
-        Ok((remaining_data_bytes, pos))
+    ) -> Result<(Vec<u8>, usize), DeserializationError> {
+        let remaining_data_bytes: &[u8] = &data[pos..data.len() - STRUCT_FOOTER_BYTES.len()];
+        let remaining_data_vec = Vec::from(remaining_data_bytes);
+        let len = remaining_data_vec.len();
+        Ok((remaining_data_vec, pos + len))
     }
 
     /// Deserializes a [NightlightState] struct from a byte slice.
@@ -143,9 +122,7 @@ impl NightlightState {
         if self.is_enabled {
             remaining_struct_bytes.extend_from_slice(&NIGHTLIGHT_STATE_ENABLED_BYTES);
         }
-        remaining_struct_bytes.extend_from_slice(&REMAINING_DATA_BYTES_HEADER);
         remaining_struct_bytes.extend_from_slice(&self.remaining_data);
-        remaining_struct_bytes.extend_from_slice(&REMAINING_DATA_BYTES_FOOTER);
 
         let remaining_struct_size = remaining_struct_bytes.len() as u8 + 1;
         bytes.push(remaining_struct_size);
@@ -190,15 +167,14 @@ mod tests {
     use super::*;
 
     const BYTES_DISABLED: [u8; 41] = [
-        0x43, 0x42, 0x01, 0x00, 0x0A, 0x02, 0x01, 0x00, 0x2A, 0x06, 0x89, 0x95, 0xFC, 0xBE,
-        0x06, 0x2A, 0x2B, 0x0E, 0x13, 0x43, 0x42, 0x01, 0x00, 0xD0, 0x0A, 0x02, 0xC6, 0x14,
-        0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE6, 0xED, 0x01, 0x00, 0x00, 0x00, 0x00,
+        0x43, 0x42, 0x01, 0x00, 0x0A, 0x02, 0x01, 0x00, 0x2A, 0x06, 0x89, 0x95, 0xFC, 0xBE, 0x06,
+        0x2A, 0x2B, 0x0E, 0x13, 0x43, 0x42, 0x01, 0x00, 0xD0, 0x0A, 0x02, 0xC6, 0x14, 0xA9, 0xF6,
+        0xE2, 0xD3, 0xEF, 0xEA, 0xE6, 0xED, 0x01, 0x00, 0x00, 0x00, 0x00,
     ];
     const BYTES_ENABLED: [u8; 43] = [
-        0x43, 0x42, 0x01, 0x00, 0x0A, 0x02, 0x01, 0x00, 0x2A, 0x06, 0x89, 0x95, 0xFC, 0xBE,
-        0x06, 0x2A, 0x2B, 0x0E, 0x15, 0x43, 0x42, 0x01, 0x00, 0x10, 0x00, 0xD0, 0x0A, 0x02,
-        0xC6, 0x14, 0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE6, 0xED, 0x01, 0x00, 0x00, 0x00,
-        0x00,
+        0x43, 0x42, 0x01, 0x00, 0x0A, 0x02, 0x01, 0x00, 0x2A, 0x06, 0x89, 0x95, 0xFC, 0xBE, 0x06,
+        0x2A, 0x2B, 0x0E, 0x15, 0x43, 0x42, 0x01, 0x00, 0x10, 0x00, 0xD0, 0x0A, 0x02, 0xC6, 0x14,
+        0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE6, 0xED, 0x01, 0x00, 0x00, 0x00, 0x00,
     ];
 
     #[test]
@@ -206,7 +182,9 @@ mod tests {
         let state_disabled = NightlightState {
             timestamp: 1742670473,
             is_enabled: false,
-            remaining_data: [0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA],
+            remaining_data: vec![
+                0xD0, 0x0A, 0x02, 0xC6, 0x14, 0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE7, 0xED, 0x01,
+            ],
         };
         let bytes_disabled = state_disabled.serialize_to_bytes();
         assert_eq!(bytes_disabled, BYTES_DISABLED);
@@ -214,7 +192,9 @@ mod tests {
         let state_enabled = NightlightState {
             timestamp: 1742670473,
             is_enabled: true,
-            remaining_data: [0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA],
+            remaining_data: vec![
+                0xD0, 0x0A, 0x02, 0xC6, 0x14, 0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE7, 0xED, 0x01,
+            ],
         };
         let bytes_enabled = state_enabled.serialize_to_bytes();
         assert_eq!(bytes_enabled, BYTES_ENABLED);
@@ -225,7 +205,9 @@ mod tests {
         let expected_state_disabled = NightlightState {
             timestamp: 1742670473,
             is_enabled: false,
-            remaining_data: [0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA],
+            remaining_data: vec![
+                0xD0, 0x0A, 0x02, 0xC6, 0x14, 0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE7, 0xED, 0x01,
+            ],
         };
         let state_disabled = NightlightState::deserialize_from_bytes(&BYTES_DISABLED).unwrap();
         assert_eq!(state_disabled, expected_state_disabled);
@@ -233,7 +215,9 @@ mod tests {
         let expected_state_enabled = NightlightState {
             timestamp: 1742670473,
             is_enabled: true,
-            remaining_data: [0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA],
+            remaining_data: vec![
+                0xD0, 0x0A, 0x02, 0xC6, 0x14, 0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE7, 0xED, 0x01,
+            ],
         };
         let state_enabled = NightlightState::deserialize_from_bytes(&BYTES_ENABLED).unwrap();
         assert_eq!(state_enabled, expected_state_enabled);
