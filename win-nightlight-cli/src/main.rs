@@ -70,8 +70,7 @@ fn main() -> Result<()> {
             Schedule::Solar => {
                 if settings.set_mode(ScheduleMode::SunsetToSunrise) {
                     // Scheduled modes require nightlight state to be enabled
-                    if !state.is_enabled {
-                        state.enable();
+                    if state.enable() {
                         set_nightlight_state(&state)?;
                     }
                     set_nightlight_settings(&settings)?;
@@ -80,8 +79,7 @@ fn main() -> Result<()> {
             Schedule::Manual => {
                 if settings.set_mode(ScheduleMode::SetHours) {
                     // Scheduled modes require nightlight state to be enabled
-                    if !state.is_enabled {
-                        state.enable();
+                    if state.enable() {
                         set_nightlight_state(&state)?;
                     }
                     set_nightlight_settings(&settings)?;
