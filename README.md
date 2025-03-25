@@ -4,12 +4,12 @@ A Rust library and CLI for manipulating the Windows night light settings.
 
 ## `win-nightlight-lib`
 
-The `win-nightlight-lib` library includes basic functionality to parse the Windows
-night light settings from the user's registry. The night light state and settings are
-stored in a binary format located at:
+The `win-nightlight-lib` library includes basic functionality to parse and modify the
+Windows night light settings from the user's registry. The night light state and
+settings are stored in a binary format located at:
 
-- `Computer\HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.settings\windows.data.bluelightreduction.settings`
-- `Computer\HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate\windows.data.bluelightreduction.bluelightreductionstate`
+- `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.settings\windows.data.bluelightreduction.settings`
+- `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate\windows.data.bluelightreduction.bluelightreductionstate`
 
 As the format is in binary, the implementation for serialization & deserialization is
 done at a best-effort basis based on resources found online for format interpretations.
