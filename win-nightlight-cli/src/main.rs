@@ -57,24 +57,51 @@ fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Temp { temperature }) => {
-            settings.set_color_temperature(temperature)?;
-            set_nightlight_settings(&settings)?;
-        }
-        Some(Commands::Schedule { mode }) => {
-            match mode {
-                Schedule::Off => settings.set_mode(ScheduleMode::Off),
-                Schedule::Solar => settings.set_mode(ScheduleMode::SunsetToSunrise),
-                Schedule::Manual => settings.set_mode(ScheduleMode::SetHours),
+            if settings.set_color_temperature(temperature)? {
+                set_nightlight_settings(&settings)?;
             }
-            set_nightlight_settings(&settings)?;
         }
+        Some(Commands::Schedule { mode }) => match mode {
+            Schedule::Off => {
+                if settings.set_mode(ScheduleMode::Off) {
+                    set_nightlight_settings(&settings)?;
+                }
+            }
+            Schedule::Solar => {
+                if settings.set_mode(ScheduleMode::SunsetToSunrise) {
+                    // Scheduled modes require nightlight state to be enabled
+                    if !state.is_enabled {
+                        state.enable();
+                        set_nightlight_state(&state)?;
+                    }
+                    set_nightlight_settings(&settings)?;
+                }
+            }
+            Schedule::Manual => {
+                if settings.set_mode(ScheduleMode::SetHours) {
+                    // Scheduled modes require nightlight state to be enabled
+                    if !state.is_enabled {
+                        state.enable();
+                        set_nightlight_state(&state)?;
+                    }
+                    set_nightlight_settings(&settings)?;
+                }
+            }
+        },
         Some(Commands::On) => {
-            state.enable();
-            set_nightlight_state(&state)?;
+            // Enables nightlight, ignoring any schedule mode
+            if state.enable() {
+                set_nightlight_state(&state)?;
+            }
         }
         Some(Commands::Off) => {
-            state.disable();
-            set_nightlight_state(&state)?;
+            // Force disable nightlight, requires turning off any schedule mode as well
+            if settings.set_mode(ScheduleMode::Off) {
+                set_nightlight_settings(&settings)?;
+            }
+            if state.disable() {
+                set_nightlight_state(&state)?;
+            }
         }
         None => {
             println!("{:#?}", settings);

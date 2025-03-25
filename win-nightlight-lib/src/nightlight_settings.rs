@@ -427,19 +427,23 @@ impl NightlightSettings {
     }
 
     /// Sets the schedule mode for the night light.
-    pub fn set_mode(&mut self, mode: ScheduleMode) {
+    pub fn set_mode(&mut self, mode: ScheduleMode) -> bool {
         if self.schedule_mode == mode {
-            return;
+            return false;
         }
 
         self.schedule_mode = mode;
         self.update_timestamp();
+        true
     }
 
     /// Sets the color temperature for the night light, in a range between 1200 to 6500 Kelvin.
-    pub fn set_color_temperature(&mut self, color_temperature: u16) -> Result<(), NightlightError> {
+    pub fn set_color_temperature(
+        &mut self,
+        color_temperature: u16,
+    ) -> Result<bool, NightlightError> {
         if self.color_temperature == color_temperature {
-            return Ok(());
+            return Ok(false);
         }
 
         if !(1200..=6500).contains(&color_temperature) {
@@ -447,7 +451,7 @@ impl NightlightSettings {
         }
         self.color_temperature = color_temperature;
         self.update_timestamp();
-        Ok(())
+        Ok(true)
     }
 
     /// Sets the start time for the night light's set-hours schedule.
