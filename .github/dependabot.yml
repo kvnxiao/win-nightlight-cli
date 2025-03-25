@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Enable version updates for rust
+  - package-ecosystem: "cargo"
+    directories:
+      - "win-nightlight-cli"
+      - "win-nightlight-lib"
+    schedule:
+      interval: "weekly"
+    allow:
+      - dependency-type: "all"
+    groups:
+      all:
+        patterns:
+          - "*"
