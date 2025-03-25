@@ -1,6 +1,9 @@
 # `wnl` CLI / `win-nightlight-lib`
 
-A Rust library and CLI for manipulating the Windows night light settings.
+A Rust library and CLI for manipulating the Windows 11 night light settings.
+
+**NOTE: Tested on Windows 11 24H2 (OS Build 26100.3476)**. This may not be guaranteed
+to work on older Windows versions.
 
 ## `win-nightlight-lib`
 
