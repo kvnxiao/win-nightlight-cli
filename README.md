@@ -11,15 +11,16 @@ The `win-nightlight-lib` library includes basic functionality to parse and modif
 Windows night light settings from the user's registry. The night light state and
 settings are stored in a binary format located at:
 
-- `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.settings\windows.data.bluelightreduction.settings`
 - `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate\windows.data.bluelightreduction.bluelightreductionstate`
+- `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.settings\windows.data.bluelightreduction.settings`
 
 As the format is in binary, the implementation for serialization & deserialization is
-done at a best-effort basis based on resources found online for format interpretations.
-See the documentation for `NightlightSettings` and `NightlightState` for more details
-regarding the data structure interpretations. **Currently, the only unknown part about
-the data structures is related to the latter bytes of the `NightlightState` - any
-contribution towards this would be greatly appreciated!**
+done at a best-effort basis based on resources found online for reverse-engineered
+format interpretations. See the documentation for `NightlightSettings` and
+`NightlightState` for more details regarding the data structure interpretations.
+**Currently, the only unknown part about the data structures is related to the latter
+bytes of the `NightlightState` - any contribution towards this would be greatly
+appreciated!**
 
 ## `wnl.exe` CLI Usage
 
