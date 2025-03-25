@@ -9,7 +9,7 @@ use win_nightlight_lib::{
 };
 
 const NAIVE_TIME_FORMAT: &str = "%I:%M %p";
-const DATE_TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S %Z";
+const DATE_TIME_FORMAT: &str = "%Y-%m-%d %I:%M:%S %p %Z";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
