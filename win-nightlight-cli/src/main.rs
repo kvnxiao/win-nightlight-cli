@@ -41,16 +41,21 @@ impl FromStr for Schedule {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Sets the color temperature in Kelvin (1200 - 6500)
     Temp {
         #[arg(index = 1)]
         temperature: u16,
     },
+    /// Sets the schedule mode ('off', 'solar', or 'manual')
     Schedule {
         #[arg(index = 1)]
         mode: Schedule,
     },
+    /// Enables nightlight
     On,
+    /// Disables nightlight
     Off,
+    /// Prints the current nightlight state and settings
     Status,
 }
 
