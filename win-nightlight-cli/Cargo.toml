@@ -5,5 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.97"
+chrono = "0.4.40"
 clap = { version = "4.5.32", features = ["derive"] }
+indoc = "2.0.6"
 win-nightlight-lib = { path = "../win-nightlight-lib" }

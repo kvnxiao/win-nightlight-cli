@@ -1,17 +1,22 @@
 use anyhow::{Result, anyhow};
+use chrono::{DateTime, Local};
 use clap::{Parser, Subcommand, command};
+use indoc::printdoc;
 use std::str::FromStr;
 use win_nightlight_lib::{
     get_nightlight_settings, get_nightlight_state, nightlight_settings::ScheduleMode,
     set_nightlight_settings, set_nightlight_state,
 };
 
+const NAIVE_TIME_FORMAT: &str = "%I:%M %p";
+const DATE_TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S %Z";
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
-    command: Option<Commands>,
+    command: Commands,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +51,7 @@ enum Commands {
     },
     On,
     Off,
+    Status,
 }
 
 fn main() -> Result<()> {
@@ -56,12 +62,12 @@ fn main() -> Result<()> {
         get_nightlight_state().map_err(|e| anyhow!("Failed to read nightlight state: {}", e))?;
 
     match cli.command {
-        Some(Commands::Temp { temperature }) => {
+        Commands::Temp { temperature } => {
             if settings.set_color_temperature(temperature)? {
                 set_nightlight_settings(&settings)?;
             }
         }
-        Some(Commands::Schedule { mode }) => match mode {
+        Commands::Schedule { mode } => match mode {
             Schedule::Off => {
                 if settings.set_mode(ScheduleMode::Off) {
                     set_nightlight_settings(&settings)?;
@@ -86,13 +92,13 @@ fn main() -> Result<()> {
                 }
             }
         },
-        Some(Commands::On) => {
+        Commands::On => {
             // Enables nightlight, ignoring any schedule mode
             if state.enable() {
                 set_nightlight_state(&state)?;
             }
         }
-        Some(Commands::Off) => {
+        Commands::Off => {
             // Force disable nightlight, requires turning off any schedule mode as well
             if settings.set_mode(ScheduleMode::Off) {
                 set_nightlight_settings(&settings)?;
@@ -101,9 +107,40 @@ fn main() -> Result<()> {
                 set_nightlight_state(&state)?;
             }
         }
-        None => {
-            println!("{:#?}", settings);
-            println!("{:#?}", state);
+        Commands::Status => {
+            let state_last_modified = DateTime::from_timestamp(state.timestamp as i64, 0)
+                .ok_or_else(|| anyhow!("Failed to convert timestamp to DateTime"))?;
+            let settings_last_modified = DateTime::from_timestamp(settings.timestamp as i64, 0)
+                .ok_or_else(|| anyhow!("Failed to convert timestamp to DateTime"))?;
+            let state_last_modified_local: DateTime<Local> = DateTime::from(state_last_modified);
+            let settings_last_modified_local: DateTime<Local> =
+                DateTime::from(settings_last_modified);
+
+            printdoc!(
+                r#"
+                Nightlight state:
+                  - last modified:     {}
+                  - is enabled:        {}
+                
+                Nightlight settings
+                  - last modified:     {}
+                  - color temperature: {}K
+                  - schedule mode:     {}
+                  - schedule start:    {}
+                  - schedule end:      {}
+                  - sunset time:       {}
+                  - sunrise time:      {}
+                "#,
+                state_last_modified_local.format(DATE_TIME_FORMAT),
+                state.is_enabled,
+                settings_last_modified_local.format(DATE_TIME_FORMAT),
+                settings.color_temperature,
+                settings.schedule_mode,
+                settings.start_time.format(NAIVE_TIME_FORMAT),
+                settings.end_time.format(NAIVE_TIME_FORMAT),
+                settings.sunset_time.format(NAIVE_TIME_FORMAT),
+                settings.sunrise_time.format(NAIVE_TIME_FORMAT),
+            );
         }
     }
     Ok(())

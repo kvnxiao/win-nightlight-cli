@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::{
     consts::*,
     parser::{
@@ -38,6 +40,16 @@ pub enum ScheduleMode {
     Off,
     SunsetToSunrise,
     SetHours,
+}
+
+impl fmt::Display for ScheduleMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ScheduleMode::Off => write!(f, "off"),
+            ScheduleMode::SunsetToSunrise => write!(f, "sunset to sunrise"),
+            ScheduleMode::SetHours => write!(f, "set hours"),
+        }
+    }
 }
 
 /// Known types of time blocks
