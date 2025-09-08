@@ -6,5 +6,5 @@ edition = "2024"
 [dependencies]
 chrono = "0.4.40"
 thiserror = "2.0.12"
-windows-registry = "0.5.1"
-windows-result = "0.3.2"
+windows-registry = "0.6.0"
+windows-result = "0.4.0"
