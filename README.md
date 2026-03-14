@@ -14,13 +14,8 @@ settings are stored in a binary format located at:
 - `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate\windows.data.bluelightreduction.bluelightreductionstate`
 - `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.settings\windows.data.bluelightreduction.settings`
 
-As the format is in binary, the implementation for serialization & deserialization is
-done at a best-effort basis based on resources found online for reverse-engineered
-format interpretations. See the documentation for `NightlightSettings` and
-`NightlightState` for more details regarding the data structure interpretations.
-**Currently, the only unknown part about the data structures is related to the latter
-bytes of the `NightlightState` - any contribution towards this would be greatly
-appreciated!**
+The binary format is Microsoft Bond CompactBinary v1, wrapped in a CloudStore
+envelope. See `docs/` for full format details.
 
 ## `wnl.exe` CLI Usage
 
@@ -38,4 +33,23 @@ Commands:
 Options:
   -h, --help     Print help
   -V, --version  Print version
+```
+
+### `wnl schedule`
+
+```shell
+Usage: wnl.exe schedule [OPTIONS] <MODE>
+
+Arguments:
+  <MODE>  'off', 'solar', or 'manual'
+
+Options:
+  --start <HH:MM>  Start time for 'manual' mode (24-hour format)
+  --end <HH:MM>    End time for 'manual' mode (24-hour format)
+
+Examples:
+  wnl schedule manual --start 22:00 --end 07:00
+  wnl schedule manual --start 22:00
+  wnl schedule solar
+  wnl schedule off
 ```

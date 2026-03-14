@@ -1,34 +1,16 @@
 use chrono::Utc;
 
-use crate::{
-    consts::*,
-    parser::{DeserializationError, parse_last_modified_timestamp_block, timestamp_to_bytes},
-};
+use crate::bond::*;
+use crate::cloudstore;
 
-/// These constant bytes will exist if the nightlight state is enabled
-const NIGHTLIGHT_STATE_ENABLED_BYTES: [u8; 2] = [0x10, 0x00];
-
-/// The windows.data.bluelightreduction.bluelightreductionstate data structure has the following binary format:
+/// Night Light state stored in the registry as a Bond CompactBinary v1 payload.
 ///
-/// * [STRUCT_HEADER_BYTES]
-/// * [TIMESTAMP_HEADER_BYTES]
-/// * [TIMESTAMP_PREFIX_BYTES]
-/// * The last-modified Unix timestamp in seconds, variably-encoded into [TIMESTAMP_SIZE] bytes
-///     - byte 0: bits 0-6 = timestamp's bits 0-6, but top bit 7 is always set
-///     - byte 1: bits 0-6 = timestamp's bits 7-13, but top bit 7 is always set
-///     - byte 2: bits 0-6 = timestamp's bits 14-20, but top bit 7 is always set
-///     - byte 3: bits 0-6 = timestamp's bits 21-27, but top bit 7 is always set
-///     - byte 4: bits 0-6 = timestamp's bits 28-31, but top bit 7 is NOT set
-/// * [TIMESTAMP_SUFFIX_BYTES]
-/// * single byte to identify the length of the remaining data
-///     - the purpose of these remaining bytes is currently unknown, so the known values of this single byte are:
-///         - 0x13: is_enabled = true
-///         - 0x15: is_enabled = false
-/// * [STRUCT_HEADER_BYTES] again
-/// * if is_enabled = true, then include [NIGHTLIGHT_STATE_ENABLED_BYTES]
-/// * unknown bytes of size [REMAINING_DATA_BYTES_BODY_SIZE] with values that change over time
-/// * [STRUCT_FOOTER_BYTES]
+/// The binary format is a CloudStore wrapper containing an inner Bond struct with fields:
+/// - Field 0:  int32  — enabled flag (presence = force-enabled)
+/// - Field 10: int32  — initialized marker (always 1)
+/// - Field 20: uint64 — last transition FILETIME
 ///
+/// See `docs/nightlight-registry-format.md` for full details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NightlightState {
     /// The last-modified Unix timestamp in seconds
@@ -36,99 +18,84 @@ pub struct NightlightState {
     /// Whether the nightlight is (force) enabled or not.
     /// If true, then the nightlight will be enabled regardless of the schedule settings.
     pub is_enabled: bool,
-    /// The remaining data bytes read from the registry
-    remaining_data: Vec<u8>,
+    /// Always 1; likely a "data valid" or schema version marker.
+    pub initialized: i32,
+    /// Windows FILETIME of the last state transition (toggle or scheduled change).
+    /// 100-nanosecond intervals since 1601-01-01 UTC.
+    pub last_transition_filetime: u64,
 }
 
 impl NightlightState {
-    /// Parses the struct header block.
-    fn parse_struct_header_block(data: &[u8], pos: usize) -> Result<usize, DeserializationError> {
-        if data[pos..pos + STRUCT_HEADER_BYTES.len()] != STRUCT_HEADER_BYTES {
-            return Err(DeserializationError::StructStart);
-        }
-        Ok(pos + STRUCT_HEADER_BYTES.len())
-    }
-
-    /// Parses the struct footer block.
-    fn parse_struct_footer_block(data: &[u8], pos: usize) -> Result<usize, DeserializationError> {
-        if data[pos..pos + STRUCT_FOOTER_BYTES.len()] != STRUCT_FOOTER_BYTES {
-            return Err(DeserializationError::StructEnd);
-        }
-        Ok(pos + STRUCT_FOOTER_BYTES.len())
-    }
-
-    fn parse_is_enabled_block(data: &[u8], pos: usize) -> (bool, usize) {
-        match data[pos..pos + NIGHTLIGHT_STATE_ENABLED_BYTES.len()]
-            == NIGHTLIGHT_STATE_ENABLED_BYTES
-        {
-            true => (true, pos + NIGHTLIGHT_STATE_ENABLED_BYTES.len()),
-            false => (false, pos),
-        }
-    }
-
-    /// Read the remaining data bytes and save it if we need to write it back
-    fn parse_remaining_data_block(
-        data: &[u8],
-        pos: usize,
-    ) -> Result<(Vec<u8>, usize), DeserializationError> {
-        let remaining_data_bytes: &[u8] = &data[pos..data.len() - STRUCT_FOOTER_BYTES.len()];
-        let remaining_data_vec = Vec::from(remaining_data_bytes);
-        let len = remaining_data_vec.len();
-        Ok((remaining_data_vec, pos + len))
-    }
-
     /// Deserializes a [NightlightState] struct from a byte slice.
-    /// See [NightlightState] for more information about the binary format.
-    pub fn deserialize_from_bytes(data: &[u8]) -> Result<NightlightState, DeserializationError> {
-        let pos = Self::parse_struct_header_block(data, 0)?;
-        let (timestamp, pos) = parse_last_modified_timestamp_block(data, pos)?;
+    pub fn deserialize_from_bytes(data: &[u8]) -> Result<NightlightState, BondError> {
+        let (timestamp, inner_payload) = cloudstore::cloudstore_unwrap(data)?;
 
-        // Check if the remaining struct size is valid
-        let remaining_struct_size: u8 = data[pos];
-        if data.len() != remaining_struct_size as usize + pos + STRUCT_FOOTER_BYTES.len() {
-            return Err(DeserializationError::StructEnd);
-        }
+        let mut reader = CompactBinaryReader::new(&inner_payload);
+        reader.read_marshaled_header()?;
 
-        let pos = Self::parse_struct_header_block(data, pos + 1)?; // skip 1 byte since we read remaining_struct_size
-        let (is_enabled, pos) = Self::parse_is_enabled_block(data, pos);
-        let (remaining_data, pos) = Self::parse_remaining_data_block(data, pos)?;
-        let pos = Self::parse_struct_footer_block(data, pos)?;
+        let mut is_enabled = false;
+        let mut initialized: i32 = 0;
+        let mut last_transition_filetime: u64 = 0;
 
-        if pos != data.len() {
-            return Err(DeserializationError::StructEnd);
+        loop {
+            match reader.read_field_header()? {
+                FieldHeader::Stop => break,
+                FieldHeader::StopBase => continue,
+                FieldHeader::Field {
+                    id: 0,
+                    bond_type: BondType::Int32,
+                } => {
+                    let _ = reader.read_int32()?;
+                    is_enabled = true; // presence is the signal
+                }
+                FieldHeader::Field {
+                    id: 10,
+                    bond_type: BondType::Int32,
+                } => {
+                    initialized = reader.read_int32()?;
+                }
+                FieldHeader::Field {
+                    id: 20,
+                    bond_type: BondType::UInt64,
+                } => {
+                    last_transition_filetime = reader.read_uint64()?;
+                }
+                FieldHeader::Field { bond_type, .. } => {
+                    reader.skip_value(bond_type)?;
+                }
+            }
         }
 
         Ok(NightlightState {
             timestamp,
             is_enabled,
-            remaining_data,
+            initialized,
+            last_transition_filetime,
         })
     }
 
     /// Serializes a [NightlightState] struct into a byte slice.
-    /// See [NightlightState] for more information about the binary format.
     pub fn serialize_to_bytes(&self) -> Vec<u8> {
-        let mut bytes: Vec<u8> = Vec::new();
-        bytes.extend_from_slice(&STRUCT_HEADER_BYTES);
-        bytes.extend_from_slice(&TIMESTAMP_HEADER_BYTES);
-        bytes.extend_from_slice(&TIMESTAMP_PREFIX_BYTES);
-        let timestamp_bytes = timestamp_to_bytes(self.timestamp);
-        bytes.extend_from_slice(&timestamp_bytes);
-        bytes.extend_from_slice(&TIMESTAMP_SUFFIX_BYTES);
+        let mut inner = CompactBinaryWriter::new();
+        inner.write_marshaled_header();
 
-        // Figure out the size of the remaining bytes after computing the back bytes
-        let mut remaining_struct_bytes: Vec<u8> = Vec::new();
-        remaining_struct_bytes.extend_from_slice(&STRUCT_HEADER_BYTES);
+        // Field 0: enabled flag (only present when enabled)
         if self.is_enabled {
-            remaining_struct_bytes.extend_from_slice(&NIGHTLIGHT_STATE_ENABLED_BYTES);
+            inner.write_field_header(0, BondType::Int32);
+            inner.write_int32(0);
         }
-        remaining_struct_bytes.extend_from_slice(&self.remaining_data);
 
-        let remaining_struct_size = remaining_struct_bytes.len() as u8 + 1;
-        bytes.push(remaining_struct_size);
-        bytes.extend(remaining_struct_bytes);
-        bytes.extend_from_slice(&STRUCT_FOOTER_BYTES);
-        bytes
+        // Field 10: initialized marker
+        inner.write_field_header(10, BondType::Int32);
+        inner.write_int32(self.initialized);
+
+        // Field 20: last transition FILETIME
+        inner.write_field_header(20, BondType::UInt64);
+        inner.write_uint64(self.last_transition_filetime);
+
+        inner.write_stop();
+
+        cloudstore::cloudstore_wrap(self.timestamp, &inner.into_bytes())
     }
 
     fn update_timestamp(&mut self) {
@@ -138,27 +105,23 @@ impl NightlightState {
     /// Enables the nightlight and updates the timestamp.
     /// Returns true if a change was made (i.e. the nightlight was previously disabled).
     pub fn enable(&mut self) -> bool {
-        match !self.is_enabled {
-            true => {
-                self.is_enabled = true;
-                self.update_timestamp();
-                true
-            }
-            false => false,
+        if self.is_enabled {
+            return false;
         }
+        self.is_enabled = true;
+        self.update_timestamp();
+        true
     }
 
     /// Disables the nightlight and updates the timestamp.
     /// Returns true if a change was made (i.e. the nightlight was previously enabled).
     pub fn disable(&mut self) -> bool {
-        match self.is_enabled {
-            true => {
-                self.is_enabled = false;
-                self.update_timestamp();
-                true
-            }
-            false => false,
+        if !self.is_enabled {
+            return false;
         }
+        self.is_enabled = false;
+        self.update_timestamp();
+        true
     }
 }
 
@@ -177,50 +140,43 @@ mod tests {
         0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE6, 0xED, 0x01, 0x00, 0x00, 0x00, 0x00,
     ];
 
-    #[test]
-    fn test_serialize_to_bytes() {
-        let state_disabled = NightlightState {
+    // Decode the FILETIME from the test data varint bytes [0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE6, 0xED, 0x01]
+    const EXPECTED_FILETIME: u64 = 133_871_411_809_270_569;
+
+    fn expected_disabled() -> NightlightState {
+        NightlightState {
             timestamp: 1742670473,
             is_enabled: false,
-            remaining_data: vec![
-                0xD0, 0x0A, 0x02, 0xC6, 0x14, 0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE7, 0xED, 0x01,
-            ],
-        };
-        let bytes_disabled = state_disabled.serialize_to_bytes();
-        assert_eq!(bytes_disabled, BYTES_DISABLED);
+            initialized: 1,
+            last_transition_filetime: EXPECTED_FILETIME,
+        }
+    }
 
-        let state_enabled = NightlightState {
+    fn expected_enabled() -> NightlightState {
+        NightlightState {
             timestamp: 1742670473,
             is_enabled: true,
-            remaining_data: vec![
-                0xD0, 0x0A, 0x02, 0xC6, 0x14, 0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE7, 0xED, 0x01,
-            ],
-        };
-        let bytes_enabled = state_enabled.serialize_to_bytes();
+            initialized: 1,
+            last_transition_filetime: EXPECTED_FILETIME,
+        }
+    }
+
+    #[test]
+    fn test_serialize_to_bytes() {
+        let bytes_disabled = expected_disabled().serialize_to_bytes();
+        assert_eq!(bytes_disabled, BYTES_DISABLED);
+
+        let bytes_enabled = expected_enabled().serialize_to_bytes();
         assert_eq!(bytes_enabled, BYTES_ENABLED);
     }
 
     #[test]
     fn test_deserialize_from_bytes() {
-        let expected_state_disabled = NightlightState {
-            timestamp: 1742670473,
-            is_enabled: false,
-            remaining_data: vec![
-                0xD0, 0x0A, 0x02, 0xC6, 0x14, 0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE7, 0xED, 0x01,
-            ],
-        };
         let state_disabled = NightlightState::deserialize_from_bytes(&BYTES_DISABLED).unwrap();
-        assert_eq!(state_disabled, expected_state_disabled);
+        assert_eq!(state_disabled, expected_disabled());
 
-        let expected_state_enabled = NightlightState {
-            timestamp: 1742670473,
-            is_enabled: true,
-            remaining_data: vec![
-                0xD0, 0x0A, 0x02, 0xC6, 0x14, 0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE7, 0xED, 0x01,
-            ],
-        };
         let state_enabled = NightlightState::deserialize_from_bytes(&BYTES_ENABLED).unwrap();
-        assert_eq!(state_enabled, expected_state_enabled);
+        assert_eq!(state_enabled, expected_enabled());
     }
 
     #[test]

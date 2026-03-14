@@ -1,11 +1,11 @@
 use anyhow::{Result, anyhow};
-use chrono::{DateTime, Local};
-use clap::{Parser, Subcommand, command};
+use chrono::{DateTime, Local, NaiveTime};
+use clap::{Parser, Subcommand};
 use indoc::printdoc;
 use std::str::FromStr;
 use win_nightlight_lib::{
-    get_nightlight_settings, get_nightlight_state, nightlight_settings::ScheduleMode,
-    set_nightlight_settings, set_nightlight_state,
+    NightlightManager, RegistryBackend,
+    nightlight_settings::ScheduleMode,
 };
 
 const NAIVE_TIME_FORMAT: &str = "%I:%M %p";
@@ -39,6 +39,16 @@ impl FromStr for Schedule {
     }
 }
 
+impl From<Schedule> for ScheduleMode {
+    fn from(s: Schedule) -> Self {
+        match s {
+            Schedule::Off => ScheduleMode::Off,
+            Schedule::Solar => ScheduleMode::SunsetToSunrise,
+            Schedule::Manual => ScheduleMode::SetHours,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Sets the color temperature in Kelvin (1200 - 6500)
@@ -50,6 +60,12 @@ enum Commands {
     Schedule {
         #[arg(index = 1)]
         mode: Schedule,
+        /// Start time for 'manual' mode (HH:MM, 24-hour format)
+        #[arg(long)]
+        start: Option<String>,
+        /// End time for 'manual' mode (HH:MM, 24-hour format)
+        #[arg(long)]
+        end: Option<String>,
     },
     /// Enables nightlight
     On,
@@ -61,58 +77,27 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut settings = get_nightlight_settings()
-        .map_err(|e| anyhow!("Failed to read nightlight settings: {}", e))?;
-    let mut state =
-        get_nightlight_state().map_err(|e| anyhow!("Failed to read nightlight state: {}", e))?;
+    let mgr = NightlightManager::new(RegistryBackend);
 
     match cli.command {
-        Commands::Temp { temperature } => {
-            if settings.set_color_temperature(temperature)? {
-                set_nightlight_settings(&settings)?;
-            }
+        Commands::Temp { temperature } => mgr.set_color_temperature(temperature)?,
+        Commands::Schedule { mode, start, end } => {
+            let parse_time = |s: &str| -> Result<NaiveTime> {
+                NaiveTime::parse_from_str(s, "%H:%M")
+                    .map_err(|_| anyhow!("Invalid time format '{}', expected HH:MM", s))
+            };
+
+            let start_time = start.as_deref().map(parse_time).transpose()?;
+            let end_time = end.as_deref().map(parse_time).transpose()?;
+
+            mgr.set_schedule(mode.into(), start_time, end_time)?;
         }
-        Commands::Schedule { mode } => match mode {
-            Schedule::Off => {
-                if settings.set_mode(ScheduleMode::Off) {
-                    set_nightlight_settings(&settings)?;
-                }
-            }
-            Schedule::Solar => {
-                if settings.set_mode(ScheduleMode::SunsetToSunrise) {
-                    // Scheduled modes require nightlight state to be enabled
-                    if state.enable() {
-                        set_nightlight_state(&state)?;
-                    }
-                    set_nightlight_settings(&settings)?;
-                }
-            }
-            Schedule::Manual => {
-                if settings.set_mode(ScheduleMode::SetHours) {
-                    // Scheduled modes require nightlight state to be enabled
-                    if state.enable() {
-                        set_nightlight_state(&state)?;
-                    }
-                    set_nightlight_settings(&settings)?;
-                }
-            }
-        },
-        Commands::On => {
-            // Enables nightlight, ignoring any schedule mode
-            if state.enable() {
-                set_nightlight_state(&state)?;
-            }
-        }
-        Commands::Off => {
-            // Force disable nightlight, requires turning off any schedule mode as well
-            if settings.set_mode(ScheduleMode::Off) {
-                set_nightlight_settings(&settings)?;
-            }
-            if state.disable() {
-                set_nightlight_state(&state)?;
-            }
-        }
+        Commands::On => mgr.enable()?,
+        Commands::Off => mgr.disable()?,
         Commands::Status => {
+            let settings = mgr.get_settings()?;
+            let state = mgr.get_state()?;
+
             let state_last_modified = DateTime::from_timestamp(state.timestamp as i64, 0)
                 .ok_or_else(|| anyhow!("Failed to convert timestamp to DateTime"))?;
             let settings_last_modified = DateTime::from_timestamp(settings.timestamp as i64, 0)
@@ -126,7 +111,7 @@ fn main() -> Result<()> {
                 Nightlight state:
                   - last modified:     {}
                   - is enabled:        {}
-                
+
                 Nightlight settings
                   - last modified:     {}
                   - color temperature: {}K
