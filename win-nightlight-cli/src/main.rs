@@ -3,10 +3,7 @@ use chrono::{DateTime, Local, NaiveTime};
 use clap::{Parser, Subcommand};
 use indoc::printdoc;
 use std::str::FromStr;
-use win_nightlight_lib::{
-    NightlightManager, RegistryBackend,
-    nightlight_settings::ScheduleMode,
-};
+use win_nightlight_lib::{NightlightManager, RegistryBackend, nightlight_settings::ScheduleMode};
 
 const NAIVE_TIME_FORMAT: &str = "%I:%M %p";
 const DATE_TIME_FORMAT: &str = "%Y-%m-%d %I:%M:%S %p %Z";

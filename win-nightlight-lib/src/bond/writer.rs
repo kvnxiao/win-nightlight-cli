@@ -234,12 +234,12 @@ mod tests {
                 (0, BondValue::Bool(true)),
                 (1, BondValue::UInt64(1742540908)),
                 (10, BondValue::Int16(2790)),
-                (20, BondValue::Struct(BondStruct {
-                    fields: vec![
-                        (0, BondValue::Int8(19)),
-                        (1, BondValue::Int8(23)),
-                    ],
-                })),
+                (
+                    20,
+                    BondValue::Struct(BondStruct {
+                        fields: vec![(0, BondValue::Int8(19)), (1, BondValue::Int8(23))],
+                    }),
+                ),
             ],
         };
 
@@ -260,11 +260,7 @@ mod tests {
                 0,
                 BondValue::List {
                     element_type: BondType::Int8,
-                    elements: vec![
-                        BondValue::Int8(1),
-                        BondValue::Int8(2),
-                        BondValue::Int8(3),
-                    ],
+                    elements: vec![BondValue::Int8(1), BondValue::Int8(2), BondValue::Int8(3)],
                 },
             )],
         };

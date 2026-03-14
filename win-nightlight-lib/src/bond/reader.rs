@@ -1,7 +1,7 @@
+use super::BondError;
 use super::types::*;
 use super::value::*;
 use super::varint::*;
-use super::BondError;
 
 /// Result of reading a field header: either a field with ID+type, or a struct terminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,7 +163,9 @@ impl<'a> CompactBinaryReader<'a> {
 
     pub fn read_double(&mut self) -> Result<f64, BondError> {
         let b = self.read_bytes(8)?;
-        Ok(f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+        Ok(f64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
     }
 
     pub fn read_string(&mut self) -> Result<String, BondError> {
@@ -215,8 +217,12 @@ impl<'a> CompactBinaryReader<'a> {
             BondType::Bool | BondType::UInt8 | BondType::Int8 => {
                 self.read_byte()?;
             }
-            BondType::UInt16 | BondType::UInt32 | BondType::UInt64
-            | BondType::Int16 | BondType::Int32 | BondType::Int64 => {
+            BondType::UInt16
+            | BondType::UInt32
+            | BondType::UInt64
+            | BondType::Int16
+            | BondType::Int32
+            | BondType::Int64 => {
                 let (_, new_pos) = read_varint(self.data, self.pos)?;
                 self.pos = new_pos;
             }
@@ -368,21 +374,30 @@ mod tests {
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
             reader.read_field_header().unwrap(),
-            FieldHeader::Field { id: 0, bond_type: BondType::Bool }
+            FieldHeader::Field {
+                id: 0,
+                bond_type: BondType::Bool
+            }
         );
 
         let data = [0x2A];
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
             reader.read_field_header().unwrap(),
-            FieldHeader::Field { id: 1, bond_type: BondType::Struct }
+            FieldHeader::Field {
+                id: 1,
+                bond_type: BondType::Struct
+            }
         );
 
         let data = [0xA6];
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
             reader.read_field_header().unwrap(),
-            FieldHeader::Field { id: 5, bond_type: BondType::UInt64 }
+            FieldHeader::Field {
+                id: 5,
+                bond_type: BondType::UInt64
+            }
         );
     }
 
@@ -392,14 +407,20 @@ mod tests {
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
             reader.read_field_header().unwrap(),
-            FieldHeader::Field { id: 10, bond_type: BondType::Bool }
+            FieldHeader::Field {
+                id: 10,
+                bond_type: BondType::Bool
+            }
         );
 
         let data = [0xCF, 0x28];
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
             reader.read_field_header().unwrap(),
-            FieldHeader::Field { id: 40, bond_type: BondType::Int16 }
+            FieldHeader::Field {
+                id: 40,
+                bond_type: BondType::Int16
+            }
         );
     }
 
@@ -409,7 +430,10 @@ mod tests {
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
             reader.read_field_header().unwrap(),
-            FieldHeader::Field { id: 300, bond_type: BondType::UInt32 }
+            FieldHeader::Field {
+                id: 300,
+                bond_type: BondType::UInt32
+            }
         );
     }
 
@@ -476,7 +500,11 @@ mod tests {
         let mut reader = CompactBinaryReader::new(&data);
         let s = reader.read_struct().unwrap();
         assert_eq!(s.fields.len(), 1);
-        if let BondValue::List { element_type, elements } = &s.fields[0].1 {
+        if let BondValue::List {
+            element_type,
+            elements,
+        } = &s.fields[0].1
+        {
             assert_eq!(*element_type, BondType::Int8);
             assert_eq!(elements.len(), 3);
             assert_eq!(elements[0], BondValue::Int8(1));
@@ -526,13 +554,13 @@ mod tests {
         use crate::bond::writer::CompactBinaryWriter;
 
         let mut w = CompactBinaryWriter::new();
-        w.write_float(3.14f32);
-        w.write_double(2.718281828459045f64);
+        w.write_float(std::f32::consts::PI);
+        w.write_double(std::f64::consts::E);
         let bytes = w.into_bytes();
 
         let mut r = CompactBinaryReader::new(&bytes);
-        assert!((r.read_float().unwrap() - 3.14f32).abs() < f32::EPSILON);
-        assert!((r.read_double().unwrap() - 2.718281828459045f64).abs() < f64::EPSILON);
+        assert!((r.read_float().unwrap() - std::f32::consts::PI).abs() < f32::EPSILON);
+        assert!((r.read_double().unwrap() - std::f64::consts::E).abs() < f64::EPSILON);
         assert_eq!(r.remaining(), 0);
     }
 

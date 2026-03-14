@@ -70,10 +70,16 @@ fn read_time_block(reader: &mut CompactBinaryReader) -> Result<(u8, u8), BondErr
         match reader.read_field_header()? {
             FieldHeader::Stop => break,
             FieldHeader::StopBase => continue,
-            FieldHeader::Field { id: 0, bond_type: BondType::Int8 } => {
+            FieldHeader::Field {
+                id: 0,
+                bond_type: BondType::Int8,
+            } => {
                 hour = reader.read_int8()? as u8;
             }
-            FieldHeader::Field { id: 1, bond_type: BondType::Int8 } => {
+            FieldHeader::Field {
+                id: 1,
+                bond_type: BondType::Int8,
+            } => {
                 minute = reader.read_int8()? as u8;
             }
             FieldHeader::Field { bond_type, .. } => {
@@ -103,7 +109,7 @@ impl NightlightSettings {
     pub fn deserialize_from_bytes(data: &[u8]) -> Result<NightlightSettings, BondError> {
         let (timestamp, inner_payload) = cloudstore::cloudstore_unwrap(data)?;
 
-        let mut reader = CompactBinaryReader::new(&inner_payload);
+        let mut reader = CompactBinaryReader::new(inner_payload);
         reader.read_marshaled_header()?;
 
         let mut schedule_enabled = false;
@@ -118,26 +124,47 @@ impl NightlightSettings {
             match reader.read_field_header()? {
                 FieldHeader::Stop => break,
                 FieldHeader::StopBase => continue,
-                FieldHeader::Field { id: 0, bond_type: BondType::Bool } => {
+                FieldHeader::Field {
+                    id: 0,
+                    bond_type: BondType::Bool,
+                } => {
                     schedule_enabled = reader.read_bool()?;
                 }
-                FieldHeader::Field { id: 10, bond_type: BondType::Bool } => {
+                FieldHeader::Field {
+                    id: 10,
+                    bond_type: BondType::Bool,
+                } => {
                     let _ = reader.read_bool()?;
                     set_hours_mode = true; // presence is the signal
                 }
-                FieldHeader::Field { id: 20, bond_type: BondType::Struct } => {
+                FieldHeader::Field {
+                    id: 20,
+                    bond_type: BondType::Struct,
+                } => {
                     start_time = read_time_block(&mut reader)?;
                 }
-                FieldHeader::Field { id: 30, bond_type: BondType::Struct } => {
+                FieldHeader::Field {
+                    id: 30,
+                    bond_type: BondType::Struct,
+                } => {
                     end_time = read_time_block(&mut reader)?;
                 }
-                FieldHeader::Field { id: 40, bond_type: BondType::Int16 } => {
+                FieldHeader::Field {
+                    id: 40,
+                    bond_type: BondType::Int16,
+                } => {
                     color_temperature = reader.read_int16()?;
                 }
-                FieldHeader::Field { id: 50, bond_type: BondType::Struct } => {
+                FieldHeader::Field {
+                    id: 50,
+                    bond_type: BondType::Struct,
+                } => {
                     sunset_time = read_time_block(&mut reader)?;
                 }
-                FieldHeader::Field { id: 60, bond_type: BondType::Struct } => {
+                FieldHeader::Field {
+                    id: 60,
+                    bond_type: BondType::Struct,
+                } => {
                     sunrise_time = read_time_block(&mut reader)?;
                 }
                 FieldHeader::Field { bond_type, .. } => {
@@ -247,10 +274,7 @@ impl NightlightSettings {
     }
 
     /// Sets the color temperature for the night light, in a range between 1200 to 6500 Kelvin.
-    pub fn set_color_temperature(
-        &mut self,
-        color_temperature: u16,
-    ) -> Result<bool, SettingsError> {
+    pub fn set_color_temperature(&mut self, color_temperature: u16) -> Result<bool, SettingsError> {
         if self.color_temperature == color_temperature {
             return Ok(false);
         }

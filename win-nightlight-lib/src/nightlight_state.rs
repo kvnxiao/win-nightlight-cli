@@ -30,7 +30,7 @@ impl NightlightState {
     pub fn deserialize_from_bytes(data: &[u8]) -> Result<NightlightState, BondError> {
         let (timestamp, inner_payload) = cloudstore::cloudstore_unwrap(data)?;
 
-        let mut reader = CompactBinaryReader::new(&inner_payload);
+        let mut reader = CompactBinaryReader::new(inner_payload);
         reader.read_marshaled_header()?;
 
         let mut is_enabled = false;

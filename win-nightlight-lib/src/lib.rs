@@ -97,12 +97,12 @@ impl<B: NightlightBackend> NightlightManager<B> {
 
     pub fn get_settings(&self) -> Result<NightlightSettings, NightlightError> {
         let bytes = self.backend.read_settings_bytes()?;
-        NightlightSettings::deserialize_from_bytes(&bytes)
-            .map_err(NightlightError::DeserializeData)
+        NightlightSettings::deserialize_from_bytes(&bytes).map_err(NightlightError::DeserializeData)
     }
 
     pub fn set_settings(&self, settings: &NightlightSettings) -> Result<(), NightlightError> {
-        self.backend.write_settings_bytes(&settings.serialize_to_bytes())
+        self.backend
+            .write_settings_bytes(&settings.serialize_to_bytes())
     }
 
     pub fn get_state(&self) -> Result<NightlightState, NightlightError> {

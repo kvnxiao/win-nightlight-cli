@@ -72,7 +72,10 @@ impl BondStruct {
 
     /// Looks up the first field with the given ID.
     pub fn get(&self, id: u16) -> Option<&BondValue> {
-        self.fields.iter().find(|(fid, _)| *fid == id).map(|(_, v)| v)
+        self.fields
+            .iter()
+            .find(|(fid, _)| *fid == id)
+            .map(|(_, v)| v)
     }
 
     /// Returns true if a field with the given ID exists.

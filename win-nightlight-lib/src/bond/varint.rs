@@ -15,9 +15,7 @@ pub fn read_varint(data: &[u8], pos: usize) -> Result<(u64, usize), BondError> {
         pos += 1;
 
         let part = (byte & 0x7F) as u64;
-        value |= part
-            .checked_shl(shift)
-            .ok_or(BondError::VarintOverflow)?;
+        value |= part.checked_shl(shift).ok_or(BondError::VarintOverflow)?;
         shift += 7;
 
         if byte < 0x80 {
@@ -79,7 +77,19 @@ mod tests {
 
     #[test]
     fn varint_roundtrip() {
-        let cases: &[u64] = &[0, 1, 127, 128, 255, 256, 300, 16383, 16384, u32::MAX as u64, u64::MAX];
+        let cases: &[u64] = &[
+            0,
+            1,
+            127,
+            128,
+            255,
+            256,
+            300,
+            16383,
+            16384,
+            u32::MAX as u64,
+            u64::MAX,
+        ];
         for &val in cases {
             let mut buf = Vec::new();
             write_varint(&mut buf, val);
