@@ -15,7 +15,7 @@ settings are stored in a binary format located at:
 - `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.settings\windows.data.bluelightreduction.settings`
 
 The binary format is Microsoft Bond CompactBinary v1, wrapped in a CloudStore
-envelope. See `docs/` for full format details.
+envelope. See [`docs`](docs/) for full format details.
 
 ## `wnl.exe` CLI Usage
 
