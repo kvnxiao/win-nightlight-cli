@@ -98,31 +98,48 @@ impl NightlightState {
         cloudstore::cloudstore_wrap(self.timestamp, &inner.into_bytes())
     }
 
-    fn update_timestamp(&mut self) {
-        self.timestamp = Utc::now().timestamp() as u64;
+    /// Updates both the outer CloudStore timestamp and the inner field 20
+    /// transition FILETIME from a single "now" reading, so they stay consistent.
+    fn update_transition_timestamps(&mut self) {
+        let now = Utc::now();
+        self.timestamp = now.timestamp() as u64;
+        self.last_transition_filetime =
+            unix_to_filetime(now.timestamp() as u64, now.timestamp_subsec_nanos());
     }
 
-    /// Enables the nightlight and updates the timestamp.
+    /// Enables the nightlight and updates the transition timestamps.
     /// Returns true if a change was made (i.e. the nightlight was previously disabled).
     pub fn enable(&mut self) -> bool {
         if self.is_enabled {
             return false;
         }
         self.is_enabled = true;
-        self.update_timestamp();
+        self.update_transition_timestamps();
         true
     }
 
-    /// Disables the nightlight and updates the timestamp.
+    /// Disables the nightlight and updates the transition timestamps.
     /// Returns true if a change was made (i.e. the nightlight was previously enabled).
     pub fn disable(&mut self) -> bool {
         if !self.is_enabled {
             return false;
         }
         self.is_enabled = false;
-        self.update_timestamp();
+        self.update_transition_timestamps();
         true
     }
+}
+
+/// Seconds between the Windows FILETIME epoch (1601-01-01) and the Unix epoch (1970-01-01).
+const FILETIME_UNIX_EPOCH_OFFSET_SECS: u64 = 11_644_473_600;
+/// Number of 100-nanosecond intervals per second.
+const FILETIME_TICKS_PER_SEC: u64 = 10_000_000;
+
+/// Converts a Unix timestamp (seconds + sub-second nanoseconds) into a Windows
+/// FILETIME: the number of 100-nanosecond intervals since 1601-01-01 UTC.
+fn unix_to_filetime(secs: u64, subsec_nanos: u32) -> u64 {
+    (secs + FILETIME_UNIX_EPOCH_OFFSET_SECS) * FILETIME_TICKS_PER_SEC
+        + u64::from(subsec_nanos / 100)
 }
 
 #[cfg(test)]
@@ -177,6 +194,36 @@ mod tests {
 
         let state_enabled = NightlightState::deserialize_from_bytes(&BYTES_ENABLED).unwrap();
         assert_eq!(state_enabled, expected_enabled());
+    }
+
+    #[test]
+    fn test_unix_to_filetime() {
+        // EXPECTED_FILETIME decodes to Unix seconds 1_742_667_580 with
+        // 927_056_900 sub-second nanoseconds (9_270_569 hundred-ns ticks).
+        assert_eq!(
+            unix_to_filetime(1_742_667_580, 927_056_900),
+            EXPECTED_FILETIME
+        );
+    }
+
+    #[test]
+    fn test_enable_updates_transition_filetime() {
+        let mut state = expected_disabled();
+        assert!(state.enable());
+        assert!(state.is_enabled);
+        // Both the outer timestamp and the inner FILETIME must advance off the
+        // stale loaded values (the test fixture predates "now").
+        assert_ne!(state.last_transition_filetime, EXPECTED_FILETIME);
+        assert_ne!(state.timestamp, 1742670473);
+    }
+
+    #[test]
+    fn test_disable_updates_transition_filetime() {
+        let mut state = expected_enabled();
+        assert!(state.disable());
+        assert!(!state.is_enabled);
+        assert_ne!(state.last_transition_filetime, EXPECTED_FILETIME);
+        assert_ne!(state.timestamp, 1742670473);
     }
 
     #[test]
