@@ -1,11 +1,21 @@
 [package]
+name = "win-nightlight-cli"
+description = "Command-line tool to toggle and configure Windows 11 Night Light"
+categories = ["command-line-utilities"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[[bin]]
 name = "wnl"
-version = "0.1.0"
-edition = "2024"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.97"
 chrono = "0.4.40"
 clap = { version = "4.5.32", features = ["derive"] }
 indoc = "2.0.6"
-win-nightlight-lib = { path = "../win-nightlight-lib" }
+win-nightlight-lib.workspace = true

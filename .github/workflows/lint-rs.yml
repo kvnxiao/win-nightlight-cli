@@ -1,4 +1,4 @@
-# Installs Rust and checks formatting + linting
+# Installs Rust and checks formatting, linting, and packaging
 
 name: Lint Rust
 
@@ -35,3 +35,6 @@ jobs:
 
       - name: Run clippy check and deny warnings
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run publish dry run
+        run: cargo publish --workspace --dry-run --locked
