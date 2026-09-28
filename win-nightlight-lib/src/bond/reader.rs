@@ -179,8 +179,10 @@ impl<'a> CompactBinaryReader<'a> {
         let byte_len = len.checked_mul(2).ok_or(BondError::VarintOverflow)?;
         let bytes = self.read_bytes(byte_len)?;
         let utf16: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         String::from_utf16(&utf16).map_err(|_| BondError::InvalidUtf16)
     }
