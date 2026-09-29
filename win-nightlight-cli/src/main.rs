@@ -9,7 +9,7 @@ const NAIVE_TIME_FORMAT: &str = "%I:%M %p";
 const DATE_TIME_FORMAT: &str = "%Y-%m-%d %I:%M:%S %p %Z";
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(name = "wnl", author, version, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]

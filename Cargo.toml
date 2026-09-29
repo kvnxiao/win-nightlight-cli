@@ -1,4 +1,14 @@
 [workspace]
 resolver = "2"
-members = [ "win-nightlight-cli","win-nightlight-lib"]
+members = ["win-nightlight-cli", "win-nightlight-lib"]
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/kvnxiao/win-nightlight-cli"
+readme = "README.md"
+keywords = ["windows", "night-light", "registry", "blue-light"]
+
+[workspace.dependencies]
+win-nightlight-lib = { path = "win-nightlight-lib", version = "0.1.0" }

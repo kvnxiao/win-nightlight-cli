@@ -5,6 +5,20 @@ A Rust library and CLI for manipulating the Windows 11 night light settings.
 **NOTE: Tested on Windows 11 24H2 (OS Build 26100.3476)**. This may not be guaranteed
 to work on older Windows versions.
 
+## Installation
+
+Install the `wnl` CLI from crates.io:
+
+```shell
+cargo install win-nightlight-cli
+```
+
+Add the library to a project:
+
+```shell
+cargo add win-nightlight-lib
+```
+
 ## `win-nightlight-lib`
 
 The `win-nightlight-lib` library includes basic functionality to parse and modify the
@@ -20,6 +34,8 @@ envelope. See [`docs`](docs/) for full format details.
 ## `wnl.exe` CLI Usage
 
 ```shell
+Command-line tool to toggle and configure Windows 11 Night Light
+
 Usage: wnl.exe <COMMAND>
 
 Commands:
