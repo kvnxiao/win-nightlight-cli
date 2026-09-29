@@ -5,6 +5,7 @@ categories = ["command-line-utilities"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+license-file = "../LICENSE"
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
