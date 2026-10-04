@@ -85,8 +85,8 @@ Commands:
 
 `schedule hours` accepts `--start HH:MM` and `--end HH:MM` in 24-hour time and keeps the stored
 time for an omitted option. `schedule off` keeps the schedule type and times, and does not change
-whether Night Light is on. The command prints the new schedule and whether the current time is
-inside its window:
+whether Night Light is on. The command prints the new schedule and, when the schedule is on,
+whether the current time is inside its window:
 
 ```shell
 $ wnl schedule hours --start 21:00 --end 07:00

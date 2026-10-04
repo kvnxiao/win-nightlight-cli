@@ -56,8 +56,8 @@ enum Command {
     },
     /// Set the schedule that turns Night Light on and off
     ///
-    /// Changes only the schedule, then prints whether the current time is
-    /// inside the new schedule's window.
+    /// Changes only the schedule, then prints the new schedule and, when the
+    /// schedule is on, whether the current time is inside its window.
     Schedule {
         #[command(subcommand)]
         schedule: ScheduleCommand,
