@@ -6,13 +6,30 @@
 
 mod bond;
 mod cloudstore;
+mod error;
+#[cfg(test)]
+mod fixtures;
 pub mod nightlight_settings;
 pub mod nightlight_state;
+mod settings;
+mod state;
+mod store;
+mod time;
 
+pub use crate::error::Error;
+pub use crate::error::ErrorKind;
+pub use crate::error::Result;
+pub use crate::settings::ColorTemperature;
+pub use crate::settings::Schedule;
+pub use crate::settings::ScheduleKind;
+pub use crate::settings::ScheduleMode;
+pub use crate::settings::Settings;
+pub use crate::state::State;
+pub use crate::state::TransitionCause;
+pub use crate::time::TimeOfDay;
 use bond::BondError;
 use chrono::NaiveTime;
 use nightlight_settings::NightlightSettings;
-use nightlight_settings::ScheduleMode;
 use nightlight_settings::SettingsError;
 use nightlight_state::NightlightState;
 use thiserror::Error;
@@ -208,7 +225,7 @@ impl<B: NightlightBackend> NightlightManager<B> {
     /// state fails.
     pub fn disable(&self) -> Result<(), NightlightError> {
         let mut settings = self.get_settings()?;
-        if settings.set_mode(ScheduleMode::Off) {
+        if settings.set_mode(nightlight_settings::ScheduleMode::Off) {
             self.set_settings(&settings)?;
         }
         let mut state = self.get_state()?;
@@ -225,15 +242,17 @@ impl<B: NightlightBackend> NightlightManager<B> {
     ///
     /// Returns [`NightlightError::InvalidSettings`] with
     /// [`SettingsError::InvalidScheduleTimeOverride`] if `start` or `end` is
-    /// set for a mode other than [`ScheduleMode::SetHours`]. Returns another
+    /// set for a mode other than
+    /// [`nightlight_settings::ScheduleMode::SetHours`]. Returns another
     /// [`NightlightError`] if reading or writing the settings or state fails.
     pub fn set_schedule(
         &self,
-        mode: ScheduleMode,
+        mode: nightlight_settings::ScheduleMode,
         start: Option<NaiveTime>,
         end: Option<NaiveTime>,
     ) -> Result<(), NightlightError> {
-        if mode != ScheduleMode::SetHours && (start.is_some() || end.is_some()) {
+        if mode != nightlight_settings::ScheduleMode::SetHours && (start.is_some() || end.is_some())
+        {
             return Err(SettingsError::InvalidScheduleTimeOverride.into());
         }
 
@@ -250,7 +269,7 @@ impl<B: NightlightBackend> NightlightManager<B> {
         if !changed {
             return Ok(());
         }
-        if mode != ScheduleMode::Off {
+        if mode != nightlight_settings::ScheduleMode::Off {
             let mut state = self.get_state()?;
             if state.enable() {
                 self.set_state(&state)?;

@@ -24,5 +24,6 @@ windows-result = "0.100.0"
 workspace = true
 
 [dev-dependencies]
+hex-literal = "1.1.0"
 proptest = "1.11.0"
 test-case = "3.4.0"

@@ -106,6 +106,26 @@ impl StructWriter<'_, '_> {
         value(self.writer);
     }
 
+    pub(crate) fn bool(&mut self, id: u16, value: bool) {
+        self.field(id, BondType::Bool, |w| w.write_bool(value));
+    }
+
+    pub(crate) fn int8(&mut self, id: u16, value: i8) {
+        self.field(id, BondType::Int8, |w| w.write_int8(value));
+    }
+
+    pub(crate) fn int16(&mut self, id: u16, value: i16) {
+        self.field(id, BondType::Int16, |w| w.write_int16(value));
+    }
+
+    pub(crate) fn int32(&mut self, id: u16, value: i32) {
+        self.field(id, BondType::Int32, |w| w.write_int32(value));
+    }
+
+    pub(crate) fn uint64(&mut self, id: u16, value: u64) {
+        self.field(id, BondType::UInt64, |w| w.write_uint64(value));
+    }
+
     fn flush_before(&mut self, id: Option<u16>) {
         while let Some(field) = self
             .pending
@@ -190,7 +210,7 @@ mod tests {
         let mut writer = CompactBinaryWriter::new();
         writer.write_struct(unknown, |fields| {
             if flag {
-                fields.field(10, BondType::Bool, |w| w.write_bool(true));
+                fields.bool(10, true);
             }
         });
         writer.into_bytes()
