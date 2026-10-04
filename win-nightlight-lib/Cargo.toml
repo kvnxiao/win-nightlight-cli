@@ -23,6 +23,6 @@ windows-result = "0.100.0"
 workspace = true
 
 [dev-dependencies]
-hex-literal = "1.1.0"
+hex-literal.workspace = true
 proptest = "1.11.0"
-test-case = "3.4.0"
+test-case.workspace = true

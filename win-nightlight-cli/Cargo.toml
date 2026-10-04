@@ -25,6 +25,6 @@ win-nightlight-lib.workspace = true
 workspace = true
 
 [dev-dependencies]
-hex-literal = "1.1.0"
+hex-literal.workspace = true
 insta = "1.49.0"
-test-case = "3.4.0"
+test-case.workspace = true

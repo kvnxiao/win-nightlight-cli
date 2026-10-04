@@ -13,6 +13,8 @@ keywords = ["windows", "night-light", "registry", "blue-light"]
 
 [workspace.dependencies]
 win-nightlight-lib = { path = "win-nightlight-lib", version = "0.2.0" }
+hex-literal = "1.1.0"
+test-case = "3.4.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
