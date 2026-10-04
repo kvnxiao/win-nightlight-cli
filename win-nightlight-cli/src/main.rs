@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::CommandFactory;
 use clap::Parser;
 use clap::Subcommand;
+use clap_complete::Generator;
 use clap_complete::Shell;
 use jiff::Timestamp;
 use jiff::Zoned;
@@ -135,7 +136,10 @@ fn run(command: Command, out: &mut impl Write) -> Result<()> {
             render_schedule(&settings, now, out)?;
         }
         Command::Completions { shell } => {
-            clap_complete::generate(shell, &mut Cli::command(), "wnl", out);
+            let mut command = Cli::command();
+            command.set_bin_name("wnl");
+            command.build();
+            shell.try_generate(&command, out)?;
         }
     }
     Ok(())
@@ -311,6 +315,29 @@ mod tests {
     #[test_case(&["schedule"]; "schedule missing")]
     fn rejects_arguments(args: &[&str]) {
         let result = parse(args);
+        assert!(result.is_err(), "{result:?}");
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn completions_write_failure_returns_error() {
+        let result = run(
+            Command::Completions {
+                shell: Shell::PowerShell,
+            },
+            &mut FailingWriter,
+        );
         assert!(result.is_err(), "{result:?}");
     }
 
