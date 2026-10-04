@@ -15,6 +15,12 @@ rustup toolchain install nightly --profile minimal --component rustfmt
 cargo +stable install --locked just cargo-audit cargo-machete
 ```
 
+Install `cargo-insta` to review snapshot changes:
+
+```shell
+cargo +stable install --locked cargo-insta
+```
+
 `just check-msrv` also requires Bash and `jq`. On Windows, run it from Git Bash so that `cygpath` is
 on `PATH`.
 
@@ -43,3 +49,16 @@ The `justfile` defines the tasks that local development and CI share:
 
 Run `just check` before opening a pull request. CI runs each task as a separate job, plus
 `just check-msrv` for both crates and a `cargo publish --dry-run`.
+
+## Tests
+
+- Byte fixtures are hex constants: the library keeps them in `win-nightlight-lib/src/fixtures.rs`,
+  and the CLI tests define the few they render. Expected decoded values come from decoding the
+  fixtures by hand, not from the code under test.
+- CLI output tests use [`insta`](https://insta.rs) snapshots in `win-nightlight-cli/src/snapshots/`.
+  After a deliberate output change, run `cargo insta test --review` (or `cargo insta review` after
+  `just test`) and commit the updated `.snap` files.
+- Property tests use `proptest`. When a property test fails, commit the generated
+  `proptest-regressions/` file with the fix so the failing case replays in later runs.
+- Tests never touch the real registry: `Nightlight` tests run against an in-memory store with a
+  fixed clock.
