@@ -9,7 +9,7 @@ use std::time::UNIX_EPOCH;
 
 const FILETIME_TICKS_PER_SEC: u64 = 10_000_000;
 const NANOS_PER_FILETIME_TICK: u32 = 100;
-const FILETIME_TO_UNIX_EPOCH: Duration = Duration::from_secs(11_644_473_600);
+const FILETIME_TO_UNIX_EPOCH: Duration = Duration::from_hours(3_234_576);
 
 /// Wall-clock time of day with minute precision, from 00:00 to 23:59.
 ///

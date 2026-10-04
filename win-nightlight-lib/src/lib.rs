@@ -9,6 +9,7 @@ mod cloudstore;
 mod error;
 #[cfg(test)]
 mod fixtures;
+mod nightlight;
 pub mod nightlight_settings;
 pub mod nightlight_state;
 mod settings;
@@ -19,6 +20,7 @@ mod time;
 pub use crate::error::Error;
 pub use crate::error::ErrorKind;
 pub use crate::error::Result;
+pub use crate::nightlight::Nightlight;
 pub use crate::settings::ColorTemperature;
 pub use crate::settings::Schedule;
 pub use crate::settings::ScheduleKind;

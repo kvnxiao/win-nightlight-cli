@@ -278,6 +278,10 @@ impl Settings {
         self.color_temperature = Some(temperature.kelvin().cast_signed());
     }
 
+    pub(crate) fn stamp(&mut self, now: SystemTime) {
+        self.envelope.stamp(now);
+    }
+
     fn decode(data: &[u8]) -> Result<Self, BondError> {
         let (envelope, payload) = Envelope::decode(data)?;
         let mut reader = CompactBinaryReader::new(payload);

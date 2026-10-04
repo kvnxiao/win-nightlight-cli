@@ -8,6 +8,7 @@ use crate::bond::expect_type;
 use crate::cloudstore::Envelope;
 use crate::error::Repr;
 use crate::store::Key;
+use crate::time::filetime_from_system_time;
 use crate::time::system_time_from_filetime;
 use crate::time::system_time_from_unix_secs;
 use std::fmt;
@@ -138,6 +139,15 @@ impl State {
         } else {
             None
         };
+    }
+
+    pub(crate) fn stamp(&mut self, now: SystemTime) {
+        self.envelope.stamp(now);
+    }
+
+    pub(crate) fn record_manual_transition(&mut self, now: SystemTime) {
+        self.transition_cause = CAUSE_MANUAL;
+        self.last_transition = filetime_from_system_time(now);
     }
 
     fn decode(data: &[u8]) -> Result<Self, BondError> {
