@@ -230,6 +230,9 @@ from the serialized data, the reader should use the field's default value. Stand
 | Containers | empty |
 | Struct | default-constructed |
 
+A schema can declare a different default for a field, such as `true` for a bool; the reader then uses
+that declared default for an absent field.
+
 The writer decides whether to omit default-valued fields. The reader must handle absent fields gracefully.
 
 ## Full Example

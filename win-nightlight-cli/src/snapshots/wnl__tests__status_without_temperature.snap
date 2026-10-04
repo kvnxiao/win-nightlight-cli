@@ -1,0 +1,13 @@
+---
+source: win-nightlight-cli/src/main.rs
+expression: output
+---
+active:            no
+transition cause:  manual
+last transition:   2026-03-26 09:04:27 UTC
+state modified:    2026-03-26 09:04:29 UTC
+color temperature: Windows default
+schedule:          off
+set hours:         21:00 to 07:00
+sunset to sunrise: 00:00 to 00:00
+settings modified: 2020-08-20 21:38:48 UTC

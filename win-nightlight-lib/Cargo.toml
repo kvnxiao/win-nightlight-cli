@@ -15,10 +15,14 @@ default-target = "x86_64-pc-windows-msvc"
 targets = []
 
 [dependencies]
-chrono = "0.4.40"
-thiserror = "2.0.12"
+thiserror = "2.0.21"
 windows-registry = "0.100.0"
 windows-result = "0.100.0"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+hex-literal.workspace = true
+proptest = "1.11.0"
+test-case.workspace = true

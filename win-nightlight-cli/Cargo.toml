@@ -15,11 +15,21 @@ name = "wnl"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.97"
-chrono = "0.4.40"
-clap = { version = "4.5.32", features = ["derive"] }
-indoc = "2.0.6"
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+clap_complete = "4.6.11"
+jiff = { version = "0.2.37", default-features = false, features = [
+    "std",
+    "tz-system",
+    "tz-fat",
+    "tzdb-bundle-platform",
+] }
 win-nightlight-lib.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+hex-literal.workspace = true
+insta = "1.49.0"
+test-case.workspace = true
