@@ -4,8 +4,8 @@ description = "Read and modify Windows 11 Night Light state and settings in the 
 categories = ["os::windows-apis"]
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-license-file = "../LICENSE"
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
@@ -19,3 +19,6 @@ chrono = "0.4.40"
 thiserror = "2.0.12"
 windows-registry = "0.100.0"
 windows-result = "0.100.0"
+
+[lints]
+workspace = true

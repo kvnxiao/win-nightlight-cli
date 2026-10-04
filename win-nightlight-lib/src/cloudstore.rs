@@ -1,11 +1,16 @@
-use crate::bond::*;
+use crate::bond::BondError;
+use crate::bond::BondType;
+use crate::bond::CompactBinaryReader;
+use crate::bond::CompactBinaryWriter;
+use crate::bond::FieldHeader;
 
-/// Unwraps a CloudStore binary blob, returning (timestamp, inner_payload_slice).
+/// Unwraps a `CloudStore` binary blob, returning (timestamp,
+/// `inner_payload_slice`).
 ///
 /// Zero-copy: the returned `&[u8]` borrows directly from the input buffer,
 /// since Bond `list<int8>` stores elements as contiguous raw bytes.
 ///
-/// The CloudStore wrapper is a marshaled Bond CompactBinary v1 struct:
+/// The `CloudStore` wrapper is a marshaled Bond `CompactBinary` v1 struct:
 /// ```text
 /// Field 0: struct { field 0: bool = true }   // metadata
 /// Field 1: struct {
@@ -15,7 +20,7 @@ use crate::bond::*;
 ///   }
 /// }
 /// ```
-pub fn cloudstore_unwrap(data: &[u8]) -> Result<(u64, &[u8]), BondError> {
+pub(crate) fn cloudstore_unwrap(data: &[u8]) -> Result<(u64, &[u8]), BondError> {
     let mut reader = CompactBinaryReader::new(data);
     reader.read_marshaled_header()?;
 
@@ -26,7 +31,7 @@ pub fn cloudstore_unwrap(data: &[u8]) -> Result<(u64, &[u8]), BondError> {
     loop {
         match reader.read_field_header()? {
             FieldHeader::Stop => break,
-            FieldHeader::StopBase => continue,
+            FieldHeader::StopBase => {}
             FieldHeader::Field {
                 id: 0,
                 bond_type: BondType::Struct,
@@ -38,48 +43,7 @@ pub fn cloudstore_unwrap(data: &[u8]) -> Result<(u64, &[u8]), BondError> {
                 id: 1,
                 bond_type: BondType::Struct,
             } => {
-                // Field 1: payload container struct
-                loop {
-                    match reader.read_field_header()? {
-                        FieldHeader::Stop => break,
-                        FieldHeader::StopBase => continue,
-                        FieldHeader::Field {
-                            id: 0,
-                            bond_type: BondType::UInt64,
-                        } => {
-                            timestamp = Some(reader.read_uint64()?);
-                        }
-                        FieldHeader::Field {
-                            id: 1,
-                            bond_type: BondType::Struct,
-                        } => {
-                            // Field 1.1: data wrapper struct
-                            loop {
-                                match reader.read_field_header()? {
-                                    FieldHeader::Stop => break,
-                                    FieldHeader::StopBase => continue,
-                                    FieldHeader::Field {
-                                        id: 1,
-                                        bond_type: BondType::List,
-                                    } => {
-                                        // list<int8> — read header, then borrow raw bytes
-                                        let (elem_type, count) = reader.read_container_header()?;
-                                        if elem_type != BondType::Int8 {
-                                            return Err(BondError::UnexpectedFieldType(1));
-                                        }
-                                        payload = Some(reader.read_bytes_slice(count as usize)?);
-                                    }
-                                    FieldHeader::Field { bond_type, .. } => {
-                                        reader.skip_value(bond_type)?;
-                                    }
-                                }
-                            }
-                        }
-                        FieldHeader::Field { bond_type, .. } => {
-                            reader.skip_value(bond_type)?;
-                        }
-                    }
-                }
+                read_payload_container(&mut reader, &mut timestamp, &mut payload)?;
             }
             FieldHeader::Field { bond_type, .. } => {
                 reader.skip_value(bond_type)?;
@@ -92,8 +56,67 @@ pub fn cloudstore_unwrap(data: &[u8]) -> Result<(u64, &[u8]), BondError> {
     Ok((ts, bytes))
 }
 
-/// Wraps an inner payload into a CloudStore binary blob with the given timestamp.
-pub fn cloudstore_wrap(timestamp: u64, inner_payload: &[u8]) -> Vec<u8> {
+/// Reads field 1, the payload container struct.
+fn read_payload_container<'a>(
+    reader: &mut CompactBinaryReader<'a>,
+    timestamp: &mut Option<u64>,
+    payload: &mut Option<&'a [u8]>,
+) -> Result<(), BondError> {
+    loop {
+        match reader.read_field_header()? {
+            FieldHeader::Stop => return Ok(()),
+            FieldHeader::StopBase => {}
+            FieldHeader::Field {
+                id: 0,
+                bond_type: BondType::UInt64,
+            } => {
+                *timestamp = Some(reader.read_uint64()?);
+            }
+            FieldHeader::Field {
+                id: 1,
+                bond_type: BondType::Struct,
+            } => {
+                read_data_wrapper(reader, payload)?;
+            }
+            FieldHeader::Field { bond_type, .. } => {
+                reader.skip_value(bond_type)?;
+            }
+        }
+    }
+}
+
+/// Reads field 1.1, the data wrapper struct.
+fn read_data_wrapper<'a>(
+    reader: &mut CompactBinaryReader<'a>,
+    payload: &mut Option<&'a [u8]>,
+) -> Result<(), BondError> {
+    loop {
+        match reader.read_field_header()? {
+            FieldHeader::Stop => return Ok(()),
+            FieldHeader::StopBase => {}
+            FieldHeader::Field {
+                id: 1,
+                bond_type: BondType::List,
+            } => {
+                // list<int8> — read header, then borrow raw bytes
+                let (elem_type, count) = reader.read_container_header()?;
+                if elem_type != BondType::Int8 {
+                    return Err(BondError::UnexpectedFieldType(1));
+                }
+                *payload = Some(reader.read_bytes_slice(count as usize)?);
+            }
+            FieldHeader::Field { bond_type, .. } => {
+                reader.skip_value(bond_type)?;
+            }
+        }
+    }
+}
+
+/// Wraps an inner payload into a `CloudStore` binary blob with the given
+/// timestamp.
+pub(crate) fn cloudstore_wrap(timestamp: u64, inner_payload: &[u8]) -> Result<Vec<u8>, BondError> {
+    let payload_len = u32::try_from(inner_payload.len())?;
+
     let mut writer = CompactBinaryWriter::new();
     writer.write_marshaled_header();
 
@@ -116,14 +139,14 @@ pub fn cloudstore_wrap(timestamp: u64, inner_payload: &[u8]) -> Vec<u8> {
     // Field 1.1.1: list<int8> = inner payload
     // Int8 elements are stored as contiguous raw bytes — write them in bulk.
     writer.write_field_header(1, BondType::List);
-    writer.write_container_header(BondType::Int8, inner_payload.len() as u32);
+    writer.write_container_header(BondType::Int8, payload_len);
     writer.write_raw_bytes(inner_payload);
 
     writer.write_stop(); // end data wrapper struct
     writer.write_stop(); // end payload container struct
     writer.write_stop(); // end outer struct
 
-    writer.into_bytes()
+    Ok(writer.into_bytes())
 }
 
 #[cfg(test)]
@@ -147,8 +170,9 @@ mod tests {
 
     #[test]
     fn unwrap_settings() {
-        let (timestamp, inner) = cloudstore_unwrap(&SETTINGS_BYTES).unwrap();
-        assert_eq!(timestamp, 1742540908);
+        let (timestamp, inner) =
+            cloudstore_unwrap(&SETTINGS_BYTES).expect("settings fixture unwraps");
+        assert_eq!(timestamp, 1_742_540_908);
         // Inner payload should start with CB header
         assert_eq!(&inner[..4], &[0x43, 0x42, 0x01, 0x00]);
         // Inner payload length = 38 (from list count 0x26)
@@ -157,23 +181,26 @@ mod tests {
 
     #[test]
     fn unwrap_state_enabled() {
-        let (timestamp, inner) = cloudstore_unwrap(&STATE_ENABLED_BYTES).unwrap();
-        assert_eq!(timestamp, 1742670473);
+        let (timestamp, inner) =
+            cloudstore_unwrap(&STATE_ENABLED_BYTES).expect("state fixture unwraps");
+        assert_eq!(timestamp, 1_742_670_473);
         assert_eq!(&inner[..4], &[0x43, 0x42, 0x01, 0x00]);
         assert_eq!(inner.len(), 21);
     }
 
     #[test]
     fn wrap_roundtrip_settings() {
-        let (timestamp, inner) = cloudstore_unwrap(&SETTINGS_BYTES).unwrap();
-        let rewrapped = cloudstore_wrap(timestamp, inner);
+        let (timestamp, inner) =
+            cloudstore_unwrap(&SETTINGS_BYTES).expect("settings fixture unwraps");
+        let rewrapped = cloudstore_wrap(timestamp, inner).expect("payload wraps");
         assert_eq!(rewrapped, SETTINGS_BYTES);
     }
 
     #[test]
     fn wrap_roundtrip_state_enabled() {
-        let (timestamp, inner) = cloudstore_unwrap(&STATE_ENABLED_BYTES).unwrap();
-        let rewrapped = cloudstore_wrap(timestamp, inner);
+        let (timestamp, inner) =
+            cloudstore_unwrap(&STATE_ENABLED_BYTES).expect("state fixture unwraps");
+        let rewrapped = cloudstore_wrap(timestamp, inner).expect("payload wraps");
         assert_eq!(rewrapped, STATE_ENABLED_BYTES);
     }
 }

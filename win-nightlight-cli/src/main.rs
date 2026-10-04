@@ -1,9 +1,17 @@
-use anyhow::{Result, anyhow};
-use chrono::{DateTime, Local, NaiveTime};
-use clap::{Parser, Subcommand};
+//! `wnl` command-line tool to toggle and configure Windows 11 Night Light.
+
+use anyhow::Context;
+use anyhow::Result;
+use chrono::DateTime;
+use chrono::Local;
+use chrono::NaiveTime;
+use clap::Parser;
+use clap::Subcommand;
 use indoc::printdoc;
 use std::str::FromStr;
-use win_nightlight_lib::{NightlightManager, RegistryBackend, nightlight_settings::ScheduleMode};
+use win_nightlight_lib::NightlightManager;
+use win_nightlight_lib::RegistryBackend;
+use win_nightlight_lib::nightlight_settings::ScheduleMode;
 
 const NAIVE_TIME_FORMAT: &str = "%I:%M %p";
 const DATE_TIME_FORMAT: &str = "%Y-%m-%d %I:%M:%S %p %Z";
@@ -81,7 +89,7 @@ fn main() -> Result<()> {
         Commands::Schedule { mode, start, end } => {
             let parse_time = |s: &str| -> Result<NaiveTime> {
                 NaiveTime::parse_from_str(s, "%H:%M")
-                    .map_err(|_| anyhow!("Invalid time format '{}', expected HH:MM", s))
+                    .with_context(|| format!("Invalid time format '{s}', expected HH:MM"))
             };
 
             let start_time = start.as_deref().map(parse_time).transpose()?;
@@ -95,16 +103,20 @@ fn main() -> Result<()> {
             let settings = mgr.get_settings()?;
             let state = mgr.get_state()?;
 
-            let state_last_modified = DateTime::from_timestamp(state.timestamp as i64, 0)
-                .ok_or_else(|| anyhow!("Failed to convert timestamp to DateTime"))?;
-            let settings_last_modified = DateTime::from_timestamp(settings.timestamp as i64, 0)
-                .ok_or_else(|| anyhow!("Failed to convert timestamp to DateTime"))?;
+            let state_last_modified = i64::try_from(state.timestamp)
+                .ok()
+                .and_then(|secs| DateTime::from_timestamp(secs, 0))
+                .context("Failed to convert timestamp to DateTime")?;
+            let settings_last_modified = i64::try_from(settings.timestamp)
+                .ok()
+                .and_then(|secs| DateTime::from_timestamp(secs, 0))
+                .context("Failed to convert timestamp to DateTime")?;
             let state_last_modified_local: DateTime<Local> = DateTime::from(state_last_modified);
             let settings_last_modified_local: DateTime<Local> =
                 DateTime::from(settings_last_modified);
 
             printdoc!(
-                r#"
+                r"
                 Nightlight state:
                   - last modified:     {}
                   - is enabled:        {}
@@ -117,7 +129,7 @@ fn main() -> Result<()> {
                   - schedule end:      {}
                   - sunset time:       {}
                   - sunrise time:      {}
-                "#,
+                ",
                 state_last_modified_local.format(DATE_TIME_FORMAT),
                 state.is_enabled,
                 settings_last_modified_local.format(DATE_TIME_FORMAT),

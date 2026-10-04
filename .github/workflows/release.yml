@@ -19,7 +19,7 @@ jobs:
         run: git config --global core.autocrlf false
 
       - name: Checkout repository code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

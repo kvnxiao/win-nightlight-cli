@@ -1,9 +1,10 @@
 use super::types::BondType;
 
-/// A self-describing Bond value. Used for generic parsing when the schema is not known
-/// at compile time, or for preserving fields during roundtrip serialization.
+/// A self-describing Bond value. Used for generic parsing when the schema is
+/// not known at compile time, or for preserving fields during roundtrip
+/// serialization.
 #[derive(Debug, Clone, PartialEq)]
-pub enum BondValue {
+pub(crate) enum BondValue {
     Bool(bool),
     UInt8(u8),
     UInt16(u16),
@@ -34,8 +35,8 @@ pub enum BondValue {
 }
 
 impl BondValue {
-    /// Returns the BondType corresponding to this value.
-    pub fn bond_type(&self) -> BondType {
+    /// Returns the `BondType` corresponding to this value.
+    pub(crate) fn bond_type(&self) -> BondType {
         match self {
             BondValue::Bool(_) => BondType::Bool,
             BondValue::UInt8(_) => BondType::UInt8,
@@ -58,33 +59,10 @@ impl BondValue {
     }
 }
 
-/// An ordered collection of Bond struct fields. Fields are stored as (field_id, value) pairs
-/// and should be sorted by field ID for correct serialization.
+/// An ordered collection of Bond struct fields. Fields are stored as
+/// (`field_id`, value) pairs and should be sorted by field ID for correct
+/// serialization.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct BondStruct {
-    pub fields: Vec<(u16, BondValue)>,
-}
-
-impl BondStruct {
-    pub fn new() -> Self {
-        Self { fields: Vec::new() }
-    }
-
-    /// Looks up the first field with the given ID.
-    pub fn get(&self, id: u16) -> Option<&BondValue> {
-        self.fields
-            .iter()
-            .find(|(fid, _)| *fid == id)
-            .map(|(_, v)| v)
-    }
-
-    /// Returns true if a field with the given ID exists.
-    pub fn has(&self, id: u16) -> bool {
-        self.fields.iter().any(|(fid, _)| *fid == id)
-    }
-
-    /// Adds a field. Fields should be added in ascending ID order.
-    pub fn push(&mut self, id: u16, value: BondValue) {
-        self.fields.push((id, value));
-    }
+pub(crate) struct BondStruct {
+    pub(crate) fields: Vec<(u16, BondValue)>,
 }
