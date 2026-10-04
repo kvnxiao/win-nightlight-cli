@@ -1,20 +1,16 @@
-#[cfg(test)]
-use super::BondError;
 use super::types::BondType;
 use super::types::COMPACT_BINARY_MAGIC;
 use super::types::COMPACT_BINARY_V1;
-#[cfg(test)]
-use super::value::BondStruct;
-#[cfg(test)]
-use super::value::BondValue;
+use super::unknown::UnknownField;
+use super::unknown::UnknownFields;
 use super::varint::encode_zigzag_i16;
 use super::varint::encode_zigzag_i32;
-#[cfg(test)]
-use super::varint::encode_zigzag_i64;
 use super::varint::write_varint;
+use std::iter::Peekable;
+use std::slice;
 
 /// Serializer for Bond `CompactBinary` v1 payloads.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct CompactBinaryWriter {
     buf: Vec<u8>,
 }
@@ -28,285 +24,200 @@ impl CompactBinaryWriter {
         self.buf
     }
 
-    // -- Marshaled header --
-
     pub(crate) fn write_marshaled_header(&mut self) {
         self.buf.extend_from_slice(&COMPACT_BINARY_MAGIC);
         self.buf.extend_from_slice(&COMPACT_BINARY_V1);
     }
 
-    // -- Field headers --
-
-    pub(crate) fn write_field_header(&mut self, id: u16, bond_type: BondType) {
-        let type_byte = bond_type as u8;
-        debug_assert_eq!(type_byte & 0x1F, type_byte);
-        let [lo, hi] = id.to_le_bytes();
-
-        if id <= 5 {
-            self.buf.push(type_byte | (lo << 5));
-        } else if id <= 0xFF {
-            self.buf.push(type_byte | (0x06 << 5));
-            self.buf.push(lo);
-        } else {
-            self.buf.push(type_byte | (0x07 << 5));
-            self.buf.push(lo);
-            self.buf.push(hi);
-        }
+    /// Write one struct whose known fields `fields` writes in ascending ID
+    /// order, merging `unknown` fields into that order, then write the
+    /// terminator.
+    pub(crate) fn write_struct(
+        &mut self,
+        unknown: &UnknownFields,
+        fields: impl FnOnce(&mut StructWriter<'_, '_>),
+    ) {
+        let mut writer = StructWriter {
+            writer: self,
+            pending: unknown.iter().peekable(),
+        };
+        fields(&mut writer);
+        writer.flush_before(None);
+        writer.writer.buf.push(0x00);
     }
 
-    pub(crate) fn write_stop(&mut self) {
-        self.buf.push(0x00);
+    pub(crate) fn write_bool(&mut self, value: bool) {
+        self.buf.push(u8::from(value));
     }
 
-    // -- Primitive writers --
-
-    pub(crate) fn write_bool(&mut self, val: bool) {
-        self.buf.push(u8::from(val));
+    pub(crate) fn write_int8(&mut self, value: i8) {
+        self.buf.push(value.cast_unsigned());
     }
 
-    pub(crate) fn write_int8(&mut self, val: i8) {
-        self.buf.push(val.cast_unsigned());
+    pub(crate) fn write_int16(&mut self, value: i16) {
+        write_varint(&mut self.buf, u64::from(encode_zigzag_i16(value)));
     }
 
-    /// Appends raw bytes directly to the output buffer.
-    /// Useful for bulk-writing contiguous fixed-width elements (e.g.
-    /// list<int8>).
-    pub(crate) fn write_raw_bytes(&mut self, bytes: &[u8]) {
+    pub(crate) fn write_int32(&mut self, value: i32) {
+        write_varint(&mut self.buf, u64::from(encode_zigzag_i32(value)));
+    }
+
+    pub(crate) fn write_uint64(&mut self, value: u64) {
+        write_varint(&mut self.buf, value);
+    }
+
+    pub(crate) fn write_list_header(&mut self, element_type: BondType, count: u32) {
+        self.buf.push(element_type.id());
+        write_varint(&mut self.buf, u64::from(count));
+    }
+
+    pub(crate) fn write_bytes(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
     }
 
-    pub(crate) fn write_int16(&mut self, val: i16) {
-        write_varint(&mut self.buf, u64::from(encode_zigzag_i16(val)));
-    }
-
-    pub(crate) fn write_uint32(&mut self, val: u32) {
-        write_varint(&mut self.buf, u64::from(val));
-    }
-
-    pub(crate) fn write_int32(&mut self, val: i32) {
-        write_varint(&mut self.buf, u64::from(encode_zigzag_i32(val)));
-    }
-
-    pub(crate) fn write_uint64(&mut self, val: u64) {
-        write_varint(&mut self.buf, val);
-    }
-
-    // -- Container headers --
-
-    /// Writes a list or set header (v1 format: type byte + varint count).
-    pub(crate) fn write_container_header(&mut self, element_type: BondType, count: u32) {
-        self.buf.push(element_type as u8);
-        self.write_uint32(count);
+    fn write_field_header(&mut self, id: u16, bond_type: BondType) {
+        let type_id = bond_type.id();
+        let [low, high] = id.to_le_bytes();
+        match id {
+            0..=5 => self.buf.push(type_id | (low << 5)),
+            6..=0xFF => self.buf.extend_from_slice(&[type_id | (6 << 5), low]),
+            _ => self.buf.extend_from_slice(&[type_id | (7 << 5), low, high]),
+        }
     }
 }
 
-#[cfg(test)]
-impl CompactBinaryWriter {
-    fn write_uint8(&mut self, val: u8) {
-        self.buf.push(val);
+/// Field writer for one struct that interleaves preserved unknown fields.
+pub(crate) struct StructWriter<'w, 'u> {
+    writer: &'w mut CompactBinaryWriter,
+    pending: Peekable<slice::Iter<'u, UnknownField>>,
+}
+
+impl StructWriter<'_, '_> {
+    /// Write field `id` after any unknown fields with smaller IDs; `value`
+    /// writes the field value.
+    pub(crate) fn field(
+        &mut self,
+        id: u16,
+        bond_type: BondType,
+        value: impl FnOnce(&mut CompactBinaryWriter),
+    ) {
+        self.flush_before(Some(id));
+        self.writer.write_field_header(id, bond_type);
+        value(self.writer);
     }
 
-    fn write_uint16(&mut self, val: u16) {
-        write_varint(&mut self.buf, u64::from(val));
-    }
-
-    fn write_int64(&mut self, val: i64) {
-        write_varint(&mut self.buf, encode_zigzag_i64(val));
-    }
-
-    pub(super) fn write_float(&mut self, val: f32) {
-        self.buf.extend_from_slice(&val.to_le_bytes());
-    }
-
-    pub(super) fn write_double(&mut self, val: f64) {
-        self.buf.extend_from_slice(&val.to_le_bytes());
-    }
-
-    pub(super) fn write_string(&mut self, val: &str) -> Result<(), BondError> {
-        self.write_uint32(u32::try_from(val.len())?);
-        self.buf.extend_from_slice(val.as_bytes());
-        Ok(())
-    }
-
-    fn write_wstring(&mut self, val: &str) -> Result<(), BondError> {
-        let utf16: Vec<u16> = val.encode_utf16().collect();
-        self.write_uint32(u32::try_from(utf16.len())?);
-        for unit in &utf16 {
-            self.buf.extend_from_slice(&unit.to_le_bytes());
+    fn flush_before(&mut self, id: Option<u16>) {
+        while let Some(field) = self
+            .pending
+            .next_if(|field| id.is_none_or(|id| field.id < id))
+        {
+            self.writer.write_field_header(field.id, field.bond_type);
+            self.writer.write_bytes(&field.value);
         }
-        Ok(())
-    }
-
-    /// Writes a map header (key type + value type + varint count).
-    fn write_map_header(&mut self, key_type: BondType, value_type: BondType, count: u32) {
-        self.buf.push(key_type as u8);
-        self.buf.push(value_type as u8);
-        self.write_uint32(count);
-    }
-
-    // -- High-level writers --
-
-    /// Writes a single `BondValue`.
-    fn write_value(&mut self, val: &BondValue) -> Result<(), BondError> {
-        match val {
-            BondValue::Bool(v) => self.write_bool(*v),
-            BondValue::UInt8(v) => self.write_uint8(*v),
-            BondValue::Int8(v) => self.write_int8(*v),
-            BondValue::UInt16(v) => self.write_uint16(*v),
-            BondValue::Int16(v) => self.write_int16(*v),
-            BondValue::UInt32(v) => self.write_uint32(*v),
-            BondValue::Int32(v) => self.write_int32(*v),
-            BondValue::UInt64(v) => self.write_uint64(*v),
-            BondValue::Int64(v) => self.write_int64(*v),
-            BondValue::Float(v) => self.write_float(*v),
-            BondValue::Double(v) => self.write_double(*v),
-            BondValue::String(v) => self.write_string(v)?,
-            BondValue::WString(v) => self.write_wstring(v)?,
-            BondValue::Struct(s) => self.write_struct(s)?,
-            BondValue::List {
-                element_type,
-                elements,
-            }
-            | BondValue::Set {
-                element_type,
-                elements,
-            } => {
-                self.write_container_header(*element_type, u32::try_from(elements.len())?);
-                for elem in elements {
-                    self.write_value(elem)?;
-                }
-            }
-            BondValue::Map {
-                key_type,
-                value_type,
-                entries,
-            } => {
-                self.write_map_header(*key_type, *value_type, u32::try_from(entries.len())?);
-                for (k, v) in entries {
-                    self.write_value(k)?;
-                    self.write_value(v)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Writes a `BondStruct` (fields + `BT_STOP`).
-    pub(super) fn write_struct(&mut self, s: &BondStruct) -> Result<(), BondError> {
-        for (id, val) in &s.fields {
-            self.write_field_header(*id, val.bond_type());
-            self.write_value(val)?;
-        }
-        self.write_stop();
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bond::reader::CompactBinaryReader;
+    use crate::bond::CompactBinaryReader;
+    use crate::bond::expect_type;
+    use test_case::test_case;
 
-    #[test]
-    fn write_marshaled_header() {
-        let mut w = CompactBinaryWriter::new();
-        w.write_marshaled_header();
-        assert_eq!(w.into_bytes(), [0x43, 0x42, 0x01, 0x00]);
+    #[test_case(0, BondType::Bool, &[0x02])]
+    #[test_case(1, BondType::Struct, &[0x2A])]
+    #[test_case(5, BondType::UInt64, &[0xA6])]
+    #[test_case(6, BondType::Int8, &[0xCE, 0x06])]
+    #[test_case(10, BondType::Bool, &[0xC2, 0x0A])]
+    #[test_case(40, BondType::Int16, &[0xCF, 0x28])]
+    #[test_case(255, BondType::Int32, &[0xD0, 0xFF])]
+    #[test_case(256, BondType::Int32, &[0xF0, 0x00, 0x01])]
+    #[test_case(300, BondType::UInt32, &[0xE5, 0x2C, 0x01])]
+    fn writes_field_header(id: u16, bond_type: BondType, expected: &[u8]) {
+        let mut writer = CompactBinaryWriter::new();
+        writer.write_field_header(id, bond_type);
+        assert_eq!(writer.into_bytes(), expected);
     }
 
     #[test]
-    fn field_header_small_ids() {
-        let mut w = CompactBinaryWriter::new();
-        w.write_field_header(0, BondType::Bool);
-        w.write_field_header(1, BondType::Struct);
-        w.write_field_header(5, BondType::UInt64);
-        assert_eq!(w.into_bytes(), [0x02, 0x2A, 0xA6]);
+    fn writes_marshaled_header() {
+        let mut writer = CompactBinaryWriter::new();
+        writer.write_marshaled_header();
+        assert_eq!(writer.into_bytes(), [0x43, 0x42, 0x01, 0x00]);
     }
 
     #[test]
-    fn field_header_extended_1byte() {
-        let mut w = CompactBinaryWriter::new();
-        w.write_field_header(10, BondType::Bool);
-        w.write_field_header(40, BondType::Int16);
-        assert_eq!(w.into_bytes(), [0xC2, 0x0A, 0xCF, 0x28]);
+    fn writes_scalar_values() {
+        let mut writer = CompactBinaryWriter::new();
+        writer.write_bool(true);
+        writer.write_int8(-1);
+        writer.write_int16(2790);
+        writer.write_int32(1);
+        writer.write_uint64(300);
+        writer.write_list_header(BondType::Int8, 3);
+        assert_eq!(
+            writer.into_bytes(),
+            [0x01, 0xFF, 0xCC, 0x2B, 0x02, 0xAC, 0x02, 0x0E, 0x03]
+        );
+    }
+
+    const STRUCT_WITH_UNKNOWN_FIELDS: [u8; 15] = [
+        0x2E, 0x07, // field 1: int8 7 (unknown)
+        0xC2, 0x0A, 0x01, // field 10: bool true (known)
+        0xC9, 0x0F, 0x02, b'h', b'i', // field 15: string "hi" (unknown)
+        0xE6, 0x2C, 0x01, 0x05, // field 300: uint64 5 (unknown)
+        0x00, // stop
+    ];
+
+    fn decode(data: &[u8]) -> (bool, UnknownFields) {
+        let mut reader = CompactBinaryReader::new(data);
+        let mut flag = false;
+        let mut unknown = UnknownFields::default();
+        reader
+            .read_fields(|reader, id, bond_type| match id {
+                10 => {
+                    expect_type(id, bond_type, BondType::Bool)?;
+                    flag = reader.read_bool()?;
+                    Ok(())
+                }
+                _ => unknown.capture(reader, id, bond_type),
+            })
+            .expect("fixture struct decodes");
+        (flag, unknown)
+    }
+
+    fn encode(flag: bool, unknown: &UnknownFields) -> Vec<u8> {
+        let mut writer = CompactBinaryWriter::new();
+        writer.write_struct(unknown, |fields| {
+            if flag {
+                fields.field(10, BondType::Bool, |w| w.write_bool(true));
+            }
+        });
+        writer.into_bytes()
     }
 
     #[test]
-    fn field_header_extended_2byte() {
-        let mut w = CompactBinaryWriter::new();
-        w.write_field_header(300, BondType::UInt32);
-        assert_eq!(w.into_bytes(), [0xE5, 0x2C, 0x01]);
+    fn merges_unknown_fields_in_id_order() {
+        let (flag, unknown) = decode(&STRUCT_WITH_UNKNOWN_FIELDS);
+        assert!(flag);
+        assert_eq!(encode(flag, &unknown), STRUCT_WITH_UNKNOWN_FIELDS);
     }
 
     #[test]
-    fn reader_writer_roundtrip_struct() {
-        let original = BondStruct {
-            fields: vec![
-                (0, BondValue::Bool(true)),
-                (1, BondValue::UInt64(1_742_540_908)),
-                (10, BondValue::Int16(2790)),
-                (
-                    20,
-                    BondValue::Struct(BondStruct {
-                        fields: vec![(0, BondValue::Int8(19)), (1, BondValue::Int8(23))],
-                    }),
-                ),
-            ],
-        };
-
-        let mut w = CompactBinaryWriter::new();
-        w.write_struct(&original).expect("struct encodes");
-        let bytes = w.into_bytes();
-
-        let mut r = CompactBinaryReader::new(&bytes);
-        let decoded = r.read_struct().expect("struct decodes");
-        assert_eq!(r.remaining(), 0);
-        assert_eq!(original, decoded);
+    fn keeps_unknown_fields_when_known_field_is_omitted() {
+        let (_, unknown) = decode(&STRUCT_WITH_UNKNOWN_FIELDS);
+        let mut expected = STRUCT_WITH_UNKNOWN_FIELDS.to_vec();
+        expected.drain(2..5);
+        assert_eq!(encode(false, &unknown), expected);
     }
 
     #[test]
-    fn reader_writer_roundtrip_list() {
-        let original = BondStruct {
-            fields: vec![(
-                0,
-                BondValue::List {
-                    element_type: BondType::Int8,
-                    elements: vec![BondValue::Int8(1), BondValue::Int8(2), BondValue::Int8(3)],
-                },
-            )],
-        };
-
-        let mut w = CompactBinaryWriter::new();
-        w.write_struct(&original).expect("struct encodes");
-        let bytes = w.into_bytes();
-
-        let mut r = CompactBinaryReader::new(&bytes);
-        let decoded = r.read_struct().expect("struct decodes");
-        assert_eq!(original, decoded);
-    }
-
-    #[test]
-    fn reader_writer_roundtrip_map() {
-        let original = BondStruct {
-            fields: vec![(
-                0,
-                BondValue::Map {
-                    key_type: BondType::String,
-                    value_type: BondType::Int32,
-                    entries: vec![
-                        (BondValue::String("hello".into()), BondValue::Int32(42)),
-                        (BondValue::String("world".into()), BondValue::Int32(-1)),
-                    ],
-                },
-            )],
-        };
-
-        let mut w = CompactBinaryWriter::new();
-        w.write_struct(&original).expect("struct encodes");
-        let bytes = w.into_bytes();
-
-        let mut r = CompactBinaryReader::new(&bytes);
-        let decoded = r.read_struct().expect("struct decodes");
-        assert_eq!(original, decoded);
+    fn sorts_out_of_order_unknown_fields() {
+        let data = [0xC9, 0x0F, 0x02, b'h', b'i', 0x2E, 0x07, 0x00];
+        let (_, unknown) = decode(&data);
+        assert_eq!(
+            encode(false, &unknown),
+            [0x2E, 0x07, 0xC9, 0x0F, 0x02, b'h', b'i', 0x00]
+        );
     }
 }

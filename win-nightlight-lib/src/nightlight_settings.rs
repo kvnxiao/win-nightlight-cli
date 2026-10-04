@@ -4,7 +4,9 @@ use crate::bond::BondError;
 use crate::bond::BondType;
 use crate::bond::CompactBinaryReader;
 use crate::bond::CompactBinaryWriter;
-use crate::bond::FieldHeader;
+use crate::bond::StructWriter;
+use crate::bond::UnknownFields;
+use crate::bond::expect_type;
 use crate::cloudstore;
 use chrono::NaiveTime;
 use chrono::Timelike;
@@ -79,55 +81,36 @@ pub struct NightlightSettings {
     pub sunrise_time: NaiveTime,
 }
 
-/// Reads a `TimeBlock` struct with field 0 `int8` hour and field 1 `int8`
-/// minute. Returns (hour, minute) with defaults of 0 for absent fields.
 fn read_time_block(reader: &mut CompactBinaryReader<'_>) -> Result<(u8, u8), BondError> {
     let mut hour: u8 = 0;
     let mut minute: u8 = 0;
-    loop {
-        match reader.read_field_header()? {
-            FieldHeader::Stop => break,
-            FieldHeader::StopBase => {}
-            FieldHeader::Field {
-                id: 0,
-                bond_type: BondType::Int8,
-            } => {
-                hour = u8::try_from(reader.read_int8()?)?;
-            }
-            FieldHeader::Field {
-                id: 1,
-                bond_type: BondType::Int8,
-            } => {
-                minute = u8::try_from(reader.read_int8()?)?;
-            }
-            FieldHeader::Field { bond_type, .. } => {
-                reader.skip_value(bond_type)?;
-            }
+    reader.read_fields(|reader, id, bond_type| match id {
+        0 => {
+            expect_type(id, bond_type, BondType::Int8)?;
+            hour = u8::try_from(reader.read_int8()?)?;
+            Ok(())
         }
-    }
+        1 => {
+            expect_type(id, bond_type, BondType::Int8)?;
+            minute = u8::try_from(reader.read_int8()?)?;
+            Ok(())
+        }
+        _ => reader.read_raw_value(bond_type).map(drop),
+    })?;
     Ok((hour, minute))
 }
 
-/// Writes a `TimeBlock` struct. Omits fields with value 0 (Bond default
-/// omission).
-fn write_time_block(
-    writer: &mut CompactBinaryWriter,
-    field_id: u16,
-    time: NaiveTime,
-) -> Result<(), BondError> {
-    let hour = i8::try_from(time.hour())?;
-    let minute = i8::try_from(time.minute())?;
-    writer.write_field_header(field_id, BondType::Struct);
-    if hour > 0 {
-        writer.write_field_header(0, BondType::Int8);
-        writer.write_int8(hour);
-    }
-    if minute > 0 {
-        writer.write_field_header(1, BondType::Int8);
-        writer.write_int8(minute);
-    }
-    writer.write_stop();
-    Ok(())
+fn write_time_block(fields: &mut StructWriter<'_, '_>, field_id: u16, hour: i8, minute: i8) {
+    fields.field(field_id, BondType::Struct, |w| {
+        w.write_struct(&UnknownFields::default(), |time| {
+            if hour > 0 {
+                time.field(0, BondType::Int8, |w| w.write_int8(hour));
+            }
+            if minute > 0 {
+                time.field(1, BondType::Int8, |w| w.write_int8(minute));
+            }
+        });
+    });
 }
 
 impl NightlightSettings {
@@ -152,58 +135,36 @@ impl NightlightSettings {
         let mut sunset_time = (0u8, 0u8);
         let mut sunrise_time = (0u8, 0u8);
 
-        loop {
-            match reader.read_field_header()? {
-                FieldHeader::Stop => break,
-                FieldHeader::StopBase => {}
-                FieldHeader::Field {
-                    id: 0,
-                    bond_type: BondType::Bool,
-                } => {
-                    schedule_enabled = reader.read_bool()?;
-                }
-                FieldHeader::Field {
-                    id: 10,
-                    bond_type: BondType::Bool,
-                } => {
-                    let _ = reader.read_bool()?;
-                    set_hours_mode = true; // presence is the signal
-                }
-                FieldHeader::Field {
-                    id: 20,
-                    bond_type: BondType::Struct,
-                } => {
-                    start_time = read_time_block(&mut reader)?;
-                }
-                FieldHeader::Field {
-                    id: 30,
-                    bond_type: BondType::Struct,
-                } => {
-                    end_time = read_time_block(&mut reader)?;
-                }
-                FieldHeader::Field {
-                    id: 40,
-                    bond_type: BondType::Int16,
-                } => {
-                    color_temperature = reader.read_int16()?;
-                }
-                FieldHeader::Field {
-                    id: 50,
-                    bond_type: BondType::Struct,
-                } => {
-                    sunset_time = read_time_block(&mut reader)?;
-                }
-                FieldHeader::Field {
-                    id: 60,
-                    bond_type: BondType::Struct,
-                } => {
-                    sunrise_time = read_time_block(&mut reader)?;
-                }
-                FieldHeader::Field { bond_type, .. } => {
-                    reader.skip_value(bond_type)?;
-                }
+        reader.read_fields(|reader, id, bond_type| match id {
+            0 => {
+                expect_type(id, bond_type, BondType::Bool)?;
+                schedule_enabled = reader.read_bool()?;
+                Ok(())
             }
-        }
+            10 => {
+                expect_type(id, bond_type, BondType::Bool)?;
+                reader.read_bool()?;
+                set_hours_mode = true;
+                Ok(())
+            }
+            20 | 30 | 50 | 60 => {
+                expect_type(id, bond_type, BondType::Struct)?;
+                let time = read_time_block(reader)?;
+                match id {
+                    20 => start_time = time,
+                    30 => end_time = time,
+                    50 => sunset_time = time,
+                    _ => sunrise_time = time,
+                }
+                Ok(())
+            }
+            40 => {
+                expect_type(id, bond_type, BondType::Int16)?;
+                color_temperature = reader.read_int16()?;
+                Ok(())
+            }
+            _ => reader.read_raw_value(bond_type).map(drop),
+        })?;
 
         let schedule_mode = if schedule_enabled {
             if set_hours_mode {
@@ -216,8 +177,12 @@ impl NightlightSettings {
         };
 
         let to_time = |h: u8, m: u8| -> Result<NaiveTime, BondError> {
-            NaiveTime::from_hms_opt(u32::from(h), u32::from(m), 0)
-                .ok_or(BondError::UnexpectedFieldType(0))
+            NaiveTime::from_hms_opt(u32::from(h), u32::from(m), 0).ok_or_else(|| {
+                BondError::InvalidValue {
+                    id: 20,
+                    value: format!("{h}:{m:02}"),
+                }
+            })
         };
 
         Ok(NightlightSettings {
@@ -239,39 +204,36 @@ impl NightlightSettings {
     /// exceeds the Bond `int16` range or the encoded payload exceeds the Bond
     /// `list` length range.
     pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, BondError> {
-        // Build inner payload
+        let times = [
+            (20, self.start_time),
+            (30, self.end_time),
+            (50, self.sunset_time),
+            (60, self.sunrise_time),
+        ]
+        .map(|(id, time)| -> Result<_, BondError> {
+            Ok((id, i8::try_from(time.hour())?, i8::try_from(time.minute())?))
+        });
+        let [start, end, sunset, sunrise] = times;
+        let (start, end, sunset, sunrise) = (start?, end?, sunset?, sunrise?);
+        let color_temperature = i16::try_from(self.color_temperature)?;
+
         let mut inner = CompactBinaryWriter::new();
         inner.write_marshaled_header();
-
-        // Field 0: schedule_enabled
-        if self.schedule_mode != ScheduleMode::Off {
-            inner.write_field_header(0, BondType::Bool);
-            inner.write_bool(true);
-        }
-
-        // Field 10: set_hours_mode (presence = set hours)
-        if self.schedule_mode == ScheduleMode::SetHours {
-            inner.write_field_header(10, BondType::Bool);
-            inner.write_bool(false);
-        }
-
-        // Field 20: schedule start time
-        write_time_block(&mut inner, 20, self.start_time)?;
-
-        // Field 30: schedule end time
-        write_time_block(&mut inner, 30, self.end_time)?;
-
-        // Field 40: color temperature
-        inner.write_field_header(40, BondType::Int16);
-        inner.write_int16(i16::try_from(self.color_temperature)?);
-
-        // Field 50: sunset time
-        write_time_block(&mut inner, 50, self.sunset_time)?;
-
-        // Field 60: sunrise time
-        write_time_block(&mut inner, 60, self.sunrise_time)?;
-
-        inner.write_stop();
+        inner.write_struct(&UnknownFields::default(), |fields| {
+            if self.schedule_mode != ScheduleMode::Off {
+                fields.field(0, BondType::Bool, |w| w.write_bool(true));
+            }
+            if self.schedule_mode == ScheduleMode::SetHours {
+                fields.field(10, BondType::Bool, |w| w.write_bool(false));
+            }
+            for (id, hour, minute) in [start, end] {
+                write_time_block(fields, id, hour, minute);
+            }
+            fields.field(40, BondType::Int16, |w| w.write_int16(color_temperature));
+            for (id, hour, minute) in [sunset, sunrise] {
+                write_time_block(fields, id, hour, minute);
+            }
+        });
 
         cloudstore::cloudstore_wrap(self.timestamp, &inner.into_bytes())
     }

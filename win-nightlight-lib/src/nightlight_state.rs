@@ -4,7 +4,8 @@ use crate::bond::BondError;
 use crate::bond::BondType;
 use crate::bond::CompactBinaryReader;
 use crate::bond::CompactBinaryWriter;
-use crate::bond::FieldHeader;
+use crate::bond::UnknownFields;
+use crate::bond::expect_type;
 use crate::cloudstore;
 use chrono::Utc;
 
@@ -50,34 +51,25 @@ impl NightlightState {
         let mut initialized: i32 = 0;
         let mut last_transition_filetime: u64 = 0;
 
-        loop {
-            match reader.read_field_header()? {
-                FieldHeader::Stop => break,
-                FieldHeader::StopBase => {}
-                FieldHeader::Field {
-                    id: 0,
-                    bond_type: BondType::Int32,
-                } => {
-                    let _ = reader.read_int32()?;
-                    is_enabled = true; // presence is the signal
-                }
-                FieldHeader::Field {
-                    id: 10,
-                    bond_type: BondType::Int32,
-                } => {
-                    initialized = reader.read_int32()?;
-                }
-                FieldHeader::Field {
-                    id: 20,
-                    bond_type: BondType::UInt64,
-                } => {
-                    last_transition_filetime = reader.read_uint64()?;
-                }
-                FieldHeader::Field { bond_type, .. } => {
-                    reader.skip_value(bond_type)?;
-                }
+        reader.read_fields(|reader, id, bond_type| match id {
+            0 => {
+                expect_type(id, bond_type, BondType::Int32)?;
+                reader.read_int32()?;
+                is_enabled = true;
+                Ok(())
             }
-        }
+            10 => {
+                expect_type(id, bond_type, BondType::Int32)?;
+                initialized = reader.read_int32()?;
+                Ok(())
+            }
+            20 => {
+                expect_type(id, bond_type, BondType::UInt64)?;
+                last_transition_filetime = reader.read_uint64()?;
+                Ok(())
+            }
+            _ => reader.read_raw_value(bond_type).map(drop),
+        })?;
 
         Ok(NightlightState {
             timestamp,
@@ -96,22 +88,15 @@ impl NightlightState {
     pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, BondError> {
         let mut inner = CompactBinaryWriter::new();
         inner.write_marshaled_header();
-
-        // Field 0: enabled flag (only present when enabled)
-        if self.is_enabled {
-            inner.write_field_header(0, BondType::Int32);
-            inner.write_int32(0);
-        }
-
-        // Field 10: initialized marker
-        inner.write_field_header(10, BondType::Int32);
-        inner.write_int32(self.initialized);
-
-        // Field 20: last transition FILETIME
-        inner.write_field_header(20, BondType::UInt64);
-        inner.write_uint64(self.last_transition_filetime);
-
-        inner.write_stop();
+        inner.write_struct(&UnknownFields::default(), |fields| {
+            if self.is_enabled {
+                fields.field(0, BondType::Int32, |w| w.write_int32(0));
+            }
+            fields.field(10, BondType::Int32, |w| w.write_int32(self.initialized));
+            fields.field(20, BondType::UInt64, |w| {
+                w.write_uint64(self.last_transition_filetime);
+            });
+        });
 
         cloudstore::cloudstore_wrap(self.timestamp, &inner.into_bytes())
     }

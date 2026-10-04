@@ -4,12 +4,12 @@
 //! [`NightlightManager`] reads and writes both registry values through a
 //! [`NightlightBackend`]; [`RegistryBackend`] targets the live registry.
 
-pub(crate) mod bond;
+mod bond;
 mod cloudstore;
 pub mod nightlight_settings;
 pub mod nightlight_state;
 
-pub use bond::BondError;
+use bond::BondError;
 use chrono::NaiveTime;
 use nightlight_settings::NightlightSettings;
 use nightlight_settings::ScheduleMode;
