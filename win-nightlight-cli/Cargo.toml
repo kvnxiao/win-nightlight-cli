@@ -16,10 +16,15 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.97"
-chrono = "0.4.40"
 clap = { version = "4.5.32", features = ["derive"] }
-indoc = "2.0.6"
+clap_complete = "4.6.11"
+jiff = "0.2.37"
 win-nightlight-lib.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+hex-literal = "1.1.0"
+insta = "1.49.0"
+test-case = "3.4.0"

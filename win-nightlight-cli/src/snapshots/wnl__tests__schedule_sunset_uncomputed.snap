@@ -1,0 +1,5 @@
+---
+source: win-nightlight-cli/src/main.rs
+expression: output
+---
+schedule set to sunset to sunrise, 00:00 to 00:00; this window is empty

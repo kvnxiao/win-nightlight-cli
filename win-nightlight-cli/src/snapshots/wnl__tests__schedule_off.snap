@@ -1,0 +1,5 @@
+---
+source: win-nightlight-cli/src/main.rs
+expression: output
+---
+schedule turned off

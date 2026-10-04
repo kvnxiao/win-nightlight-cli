@@ -1,0 +1,5 @@
+---
+source: win-nightlight-cli/src/main.rs
+expression: output
+---
+schedule set to sunset to sunrise, 19:17 to 06:38; the current time is inside this window
