@@ -95,8 +95,6 @@ pub(crate) fn system_time_from_filetime(filetime: u64) -> Option<SystemTime> {
     }
 }
 
-/// Convert `time` to a FILETIME, saturating at the ends of the FILETIME
-/// range.
 pub(crate) fn filetime_from_system_time(time: SystemTime) -> u64 {
     let epoch_ticks = filetime_ticks(FILETIME_TO_UNIX_EPOCH);
     match time.duration_since(UNIX_EPOCH) {
@@ -116,7 +114,6 @@ pub(crate) fn system_time_from_unix_secs(secs: u64) -> Option<SystemTime> {
     UNIX_EPOCH.checked_add(Duration::from_secs(secs))
 }
 
-/// Convert `time` to whole Unix seconds, clamping times before 1970 to zero.
 pub(crate) fn unix_secs_from_system_time(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())

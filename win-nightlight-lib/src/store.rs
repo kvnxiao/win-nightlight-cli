@@ -4,7 +4,6 @@ use windows_registry::Type;
 
 const VALUE_NAME: &str = "Data";
 
-/// Registry value that stores one Night Light payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Key {
     Settings,
@@ -33,13 +32,11 @@ impl fmt::Display for Key {
     }
 }
 
-/// Byte storage for the Night Light registry values.
 pub(crate) trait Store {
     fn read(&self, key: Key) -> windows_result::Result<Vec<u8>>;
     fn write(&self, key: Key, data: &[u8]) -> windows_result::Result<()>;
 }
 
-/// Store backed by the current user's registry hive.
 #[derive(Debug)]
 pub(crate) struct RegistryStore;
 
@@ -72,7 +69,6 @@ pub(crate) mod memory {
 
     const ERROR_FILE_NOT_FOUND: WIN32_ERROR = WIN32_ERROR(2);
 
-    /// In-memory store that records the keys written, in order.
     #[derive(Debug, Clone, Default)]
     pub(crate) struct MemoryStore(Arc<Mutex<Inner>>);
 

@@ -388,8 +388,6 @@ fn read_time_block(
     expect_type(id, bond_type, BondType::Struct)?;
     let mut hour: i8 = 0;
     let mut minute: i8 = 0;
-    // Unknown fields inside a time block are skipped and not written back;
-    // the known schema defines only the hour and minute.
     reader.read_fields(|reader, field_id, bond_type| match field_id {
         TIME_HOUR => {
             expect_type(field_id, bond_type, BondType::Int8)?;

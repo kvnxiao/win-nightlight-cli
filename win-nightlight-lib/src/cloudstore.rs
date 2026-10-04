@@ -26,7 +26,6 @@ pub(crate) struct Envelope {
 }
 
 impl Envelope {
-    /// Decode a `CloudStore` blob and return the envelope and its payload.
     pub(crate) fn decode(data: &[u8]) -> Result<(Self, &[u8]), BondError> {
         let mut reader = CompactBinaryReader::new(data);
         reader.read_marshaled_header()?;
@@ -53,7 +52,6 @@ impl Envelope {
         Ok((envelope, container.payload))
     }
 
-    /// Encode `payload` inside this envelope.
     pub(crate) fn encode(&self, payload: &[u8]) -> Result<Vec<u8>, BondError> {
         let count = u32::try_from(payload.len())?;
         let mut writer = CompactBinaryWriter::new();
@@ -66,7 +64,6 @@ impl Envelope {
         Ok(writer.into_bytes())
     }
 
-    /// Return the last-modified time in Unix seconds.
     pub(crate) fn modified(&self) -> u64 {
         self.modified
     }

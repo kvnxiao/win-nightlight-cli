@@ -15,7 +15,6 @@ enum FieldHeader {
     StopBase,
 }
 
-/// Return an error unless field `id` arrived with the `expected` type.
 pub(crate) fn expect_type(id: u16, found: BondType, expected: BondType) -> Result<(), BondError> {
     if found == expected {
         Ok(())
@@ -28,7 +27,6 @@ pub(crate) fn expect_type(id: u16, found: BondType, expected: BondType) -> Resul
     }
 }
 
-/// Cursor over a Bond `CompactBinary` v1 payload.
 pub(crate) struct CompactBinaryReader<'a> {
     data: &'a [u8],
     pos: usize,
@@ -46,7 +44,6 @@ impl<'a> CompactBinaryReader<'a> {
         Ok(())
     }
 
-    /// Return an error if any bytes remain unread.
     pub(crate) fn expect_end(&self) -> Result<(), BondError> {
         if self.pos == self.data.len() {
             Ok(())
@@ -55,8 +52,6 @@ impl<'a> CompactBinaryReader<'a> {
         }
     }
 
-    /// Read the fields of one struct up to its terminator.
-    ///
     /// `on_field` receives each field ID and type and must consume exactly
     /// that field's value.
     pub(crate) fn read_fields(
@@ -75,7 +70,6 @@ impl<'a> CompactBinaryReader<'a> {
         }
     }
 
-    /// Consume one value of `bond_type` and return its encoded bytes.
     pub(crate) fn read_raw_value(&mut self, bond_type: BondType) -> Result<&'a [u8], BondError> {
         let start = self.pos;
         self.skip_value(bond_type, 0)?;
@@ -104,7 +98,6 @@ impl<'a> CompactBinaryReader<'a> {
         self.read_varint()
     }
 
-    /// Read a list or set header and return the element type and count.
     pub(crate) fn read_list_header(&mut self) -> Result<(BondType, u32), BondError> {
         let element_type = self.read_type_byte()?;
         let count = u32::try_from(self.read_varint()?)?;

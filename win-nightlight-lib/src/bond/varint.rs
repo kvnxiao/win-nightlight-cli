@@ -2,8 +2,6 @@ use super::BondError;
 
 const MAX_VARINT_BYTES: usize = 10;
 
-/// Read an unsigned LEB128 varint from `data` at `pos` and return the value
-/// and the position after it.
 pub(super) fn read_varint(data: &[u8], pos: usize) -> Result<(u64, usize), BondError> {
     let mut value: u64 = 0;
     for (index, shift) in (0..MAX_VARINT_BYTES).zip((0..u64::BITS).step_by(7)) {
@@ -21,7 +19,6 @@ pub(super) fn read_varint(data: &[u8], pos: usize) -> Result<(u64, usize), BondE
     Err(BondError::VarintOverflow)
 }
 
-/// Append `value` to `buf` as an unsigned LEB128 varint.
 pub(super) fn write_varint(buf: &mut Vec<u8>, mut value: u64) {
     loop {
         let [low, ..] = value.to_le_bytes();

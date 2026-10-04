@@ -1,7 +1,6 @@
 pub(super) const COMPACT_BINARY_MAGIC: [u8; 2] = [0x43, 0x42];
 pub(super) const COMPACT_BINARY_V1: [u8; 2] = [0x01, 0x00];
 
-/// Bond data type identifier used in field and container headers.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BondType {

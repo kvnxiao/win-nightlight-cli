@@ -9,7 +9,6 @@ use super::varint::write_varint;
 use std::iter::Peekable;
 use std::slice;
 
-/// Serializer for Bond `CompactBinary` v1 payloads.
 #[derive(Debug, Default)]
 pub(crate) struct CompactBinaryWriter {
     buf: Vec<u8>,
@@ -86,15 +85,12 @@ impl CompactBinaryWriter {
     }
 }
 
-/// Field writer for one struct that interleaves preserved unknown fields.
 pub(crate) struct StructWriter<'w, 'u> {
     writer: &'w mut CompactBinaryWriter,
     pending: Peekable<slice::Iter<'u, UnknownField>>,
 }
 
 impl StructWriter<'_, '_> {
-    /// Write field `id` after any unknown fields with smaller IDs; `value`
-    /// writes the field value.
     pub(crate) fn field(
         &mut self,
         id: u16,

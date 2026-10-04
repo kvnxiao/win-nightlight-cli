@@ -15,7 +15,6 @@ pub(super) struct UnknownField {
 }
 
 impl UnknownFields {
-    /// Consume the value of field `id` from `reader` and keep its bytes.
     pub(crate) fn capture(
         &mut self,
         reader: &mut CompactBinaryReader<'_>,

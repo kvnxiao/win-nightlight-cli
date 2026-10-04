@@ -13,7 +13,6 @@ pub(crate) use unknown::UnknownFields;
 pub(crate) use writer::CompactBinaryWriter;
 pub(crate) use writer::StructWriter;
 
-/// Failure to decode or encode a Bond `CompactBinary` v1 payload.
 #[derive(Error, Debug)]
 pub(crate) enum BondError {
     #[error("unexpected end of data at byte {0}")]
