@@ -5,6 +5,7 @@ use windows_result::HRESULT;
 use windows_result::WIN32_ERROR;
 
 const FILE_NOT_FOUND: HRESULT = WIN32_ERROR(2).to_hresult();
+const MORE_DATA: HRESULT = WIN32_ERROR(234).to_hresult();
 
 /// Result of a Night Light operation.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -35,6 +36,14 @@ impl Error {
             | Repr::ColorTemperatureSyntax(_)
             | Repr::TimeOfDayRange { .. }
             | Repr::TimeOfDaySyntax(_) => ErrorKind::InvalidInput,
+        }
+    }
+
+    pub(crate) fn may_be_torn_read(&self) -> bool {
+        match &self.0 {
+            Repr::Read { source, .. } => source.code() == MORE_DATA,
+            Repr::Decode { .. } => true,
+            _ => false,
         }
     }
 }

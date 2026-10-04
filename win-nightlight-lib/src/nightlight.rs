@@ -8,6 +8,8 @@ use crate::store::Store;
 use std::fmt;
 use std::time::SystemTime;
 
+const READ_ATTEMPTS: usize = 3;
+
 /// Handle to the current user's Night Light settings and state.
 ///
 /// Settings (schedule and color temperature) and state (whether Night Light
@@ -48,7 +50,7 @@ impl Nightlight {
     /// [`ErrorKind::Registry`]: crate::ErrorKind::Registry
     /// [`ErrorKind::Decode`]: crate::ErrorKind::Decode
     pub fn read_settings(&self) -> Result<Settings> {
-        Settings::from_bytes(&self.read(Key::Settings)?)
+        self.read_decoded(Key::Settings, Settings::from_bytes)
     }
 
     /// Write `settings` with a new last-modified time.
@@ -108,7 +110,7 @@ impl Nightlight {
     /// [`ErrorKind::Registry`]: crate::ErrorKind::Registry
     /// [`ErrorKind::Decode`]: crate::ErrorKind::Decode
     pub fn read_state(&self) -> Result<State> {
-        State::from_bytes(&self.read(Key::State)?)
+        self.read_decoded(Key::State, State::from_bytes)
     }
 
     /// Write `state` with a new last-modified time.
@@ -193,6 +195,20 @@ impl Nightlight {
         self.write(Key::State, &state.to_bytes()?)
     }
 
+    // `windows-registry` sizes its buffer with one query and fills it with a
+    // second. If Windows rewrites the value in between, a longer value fails
+    // with `ERROR_MORE_DATA` and a shorter one comes back padded with zeros,
+    // which fails to decode. Both clear up on a fresh read.
+    fn read_decoded<T>(&self, key: Key, decode: impl Fn(&[u8]) -> Result<T>) -> Result<T> {
+        let mut attempt = 1;
+        loop {
+            match self.read(key).and_then(|data| decode(&data)) {
+                Err(error) if attempt < READ_ATTEMPTS && error.may_be_torn_read() => attempt += 1,
+                result => return result,
+            }
+        }
+    }
+
     fn read(&self, key: Key) -> Result<Vec<u8>> {
         self.store
             .read(key)
@@ -233,6 +249,7 @@ mod tests {
     use std::time::Duration;
     use std::time::UNIX_EPOCH;
     use test_case::test_case;
+    use windows_result::WIN32_ERROR;
 
     const CLOCK_SECS: u64 = 1_800_000_000;
 
@@ -412,5 +429,51 @@ mod tests {
             error.to_string(),
             "reading Night Light state from the registry"
         );
+    }
+
+    #[test]
+    fn retries_read_when_value_grows_between_queries() {
+        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+        store.queue_reads(Key::State, vec![Err(WIN32_ERROR(234))]);
+        assert!(
+            nightlight
+                .read_state()
+                .expect("second read succeeds")
+                .is_active()
+        );
+        assert_eq!(store.reads(), [Key::State, Key::State]);
+    }
+
+    #[test]
+    fn retries_read_when_value_shrinks_between_queries() {
+        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+        let padded = [fixtures::STATE_INACTIVE, &[0, 0]].concat();
+        store.queue_reads(Key::State, vec![Ok(padded)]);
+        assert!(
+            nightlight
+                .read_state()
+                .expect("second read succeeds")
+                .is_active()
+        );
+        assert_eq!(store.reads(), [Key::State, Key::State]);
+    }
+
+    #[test]
+    fn stops_retrying_a_payload_that_never_decodes() {
+        let store = MemoryStore::with(&[(Key::Settings, &[0x43, 0x42, 0x01])]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        let error = nightlight
+            .read_settings()
+            .expect_err("payload is truncated");
+        assert_eq!(error.kind(), ErrorKind::Decode);
+        assert_eq!(store.reads(), [Key::Settings; READ_ATTEMPTS]);
+    }
+
+    #[test]
+    fn does_not_retry_missing_value() {
+        let store = MemoryStore::default();
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        nightlight.read_state().expect_err("state value is missing");
+        assert_eq!(store.reads(), [Key::State]);
     }
 }

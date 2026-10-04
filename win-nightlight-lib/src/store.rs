@@ -63,6 +63,7 @@ pub(crate) mod memory {
     use super::Key;
     use super::Store;
     use std::collections::HashMap;
+    use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::Mutex;
     use windows_result::WIN32_ERROR;
@@ -75,6 +76,8 @@ pub(crate) mod memory {
     #[derive(Debug, Default)]
     struct Inner {
         values: HashMap<Key, Vec<u8>>,
+        queued_reads: HashMap<Key, VecDeque<Result<Vec<u8>, WIN32_ERROR>>>,
+        reads: Vec<Key>,
         writes: Vec<Key>,
     }
 
@@ -92,6 +95,18 @@ pub(crate) mod memory {
             self.lock().values.get(&key).cloned()
         }
 
+        pub(crate) fn queue_reads(&self, key: Key, results: Vec<Result<Vec<u8>, WIN32_ERROR>>) {
+            self.lock()
+                .queued_reads
+                .entry(key)
+                .or_default()
+                .extend(results);
+        }
+
+        pub(crate) fn reads(&self) -> Vec<Key> {
+            self.lock().reads.clone()
+        }
+
         pub(crate) fn writes(&self) -> Vec<Key> {
             self.lock().writes.clone()
         }
@@ -103,7 +118,20 @@ pub(crate) mod memory {
 
     impl Store for MemoryStore {
         fn read(&self, key: Key) -> windows_result::Result<Vec<u8>> {
-            self.value(key).ok_or_else(|| ERROR_FILE_NOT_FOUND.into())
+            let mut inner = self.lock();
+            inner.reads.push(key);
+            if let Some(result) = inner
+                .queued_reads
+                .get_mut(&key)
+                .and_then(VecDeque::pop_front)
+            {
+                return result.map_err(Into::into);
+            }
+            inner
+                .values
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| ERROR_FILE_NOT_FOUND.into())
         }
 
         fn write(&self, key: Key, data: &[u8]) -> windows_result::Result<()> {
