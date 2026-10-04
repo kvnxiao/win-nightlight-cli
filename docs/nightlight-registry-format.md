@@ -86,7 +86,7 @@ modified = max(now_unix_seconds, previous_modified + 2)
 | 10       | `BT_BOOL`   | `true`  | `onSunSchedule`: `true` for sunset to sunrise, `false` for set hours. Written only as `false`. |
 | 20       | `BT_STRUCT` | 00:00   | TimeBlock: set-hours start time.                                                               |
 | 30       | `BT_STRUCT` | 00:00   | TimeBlock: set-hours end time.                                                                 |
-| 40       | `BT_INT16`  | 6500    | `colorTemperature`: color temperature in kelvin; the Settings app uses 1200 to 6500. |
+| 40       | `BT_INT16`  | 6500    | `colorTemperature`: color temperature in kelvin; the Settings app uses 1200 to 6500.           |
 | 50       | `BT_STRUCT` | 00:00   | TimeBlock: sunset time Windows computes from the device location.                              |
 | 60       | `BT_STRUCT` | 00:00   | TimeBlock: sunrise time Windows computes from the device location.                             |
 | 70       | `BT_BOOL`   | `false` | `previewing`: `true` while the user drags the color temperature slider. Omitted when `false`.  |
