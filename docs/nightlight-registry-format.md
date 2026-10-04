@@ -64,7 +64,7 @@ Field 1: BT_STRUCT                          // payload container
 BT_STOP
 ```
 
-The inner payload, carried as a `list<int8>`, is itself a marshaled CompactBinary v1 struct with
+The inner payload, stored as a `list<int8>`, is itself a marshaled CompactBinary v1 struct with
 the Night Light fields. The inner struct's `BT_STOP` is the last byte of the list; three more
 `BT_STOP` bytes close the data wrapper, the payload container, and the outer struct.
 
