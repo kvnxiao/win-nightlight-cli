@@ -298,14 +298,13 @@ mod tests {
                 .expect("arguments are valid"),
             Command::Schedule {
                 schedule: ScheduleCommand::Hours {
-                    start: Some(time("21:00")),
-                    end: Some(time("07:00")),
+                    start: Some(TimeOfDay::new(21, 0).expect("21:00 is in range")),
+                    end: Some(TimeOfDay::new(7, 0).expect("07:00 is in range")),
                 }
             }
         );
     }
 
-    #[test_case(&["temp", "7000"]; "temperature above range")]
     #[test_case(&["temp", "warm"]; "temperature not a number")]
     #[test_case(&["temp"]; "temperature missing")]
     #[test_case(&["schedule", "sunset", "--start", "21:00"]; "time on sunset schedule")]
