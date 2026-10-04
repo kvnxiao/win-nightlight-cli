@@ -1,64 +1,64 @@
 use super::BondError;
-use super::types::*;
-use super::value::*;
-use super::varint::*;
+use super::types::BondType;
+use super::types::COMPACT_BINARY_MAGIC;
+use super::types::COMPACT_BINARY_V1;
+#[cfg(test)]
+use super::value::BondStruct;
+#[cfg(test)]
+use super::value::BondValue;
+use super::varint::decode_zigzag_i16;
+use super::varint::decode_zigzag_i32;
+#[cfg(test)]
+use super::varint::decode_zigzag_i64;
+use super::varint::read_varint;
 
-/// Result of reading a field header: either a field with ID+type, or a struct terminator.
+/// Result of reading a field header: either a field with ID+type, or a struct
+/// terminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FieldHeader {
+pub(crate) enum FieldHeader {
     Field { id: u16, bond_type: BondType },
     Stop,
     StopBase,
 }
 
-/// Deserializer for Bond CompactBinary v1 payloads.
-pub struct CompactBinaryReader<'a> {
+/// Deserializer for Bond `CompactBinary` v1 payloads.
+pub(crate) struct CompactBinaryReader<'a> {
     data: &'a [u8],
     pos: usize,
 }
 
 impl<'a> CompactBinaryReader<'a> {
-    pub fn new(data: &'a [u8]) -> Self {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
         Self { data, pos: 0 }
     }
 
-    pub fn position(&self) -> usize {
-        self.pos
-    }
-
-    pub fn remaining(&self) -> usize {
-        self.data.len().saturating_sub(self.pos)
-    }
-
-    fn ensure(&self, n: usize) -> Result<(), BondError> {
-        if self.pos + n > self.data.len() {
-            return Err(BondError::UnexpectedEof(self.pos));
-        }
-        Ok(())
-    }
-
     fn read_byte(&mut self) -> Result<u8, BondError> {
-        self.ensure(1)?;
-        let b = self.data[self.pos];
+        let b = *self
+            .data
+            .get(self.pos)
+            .ok_or(BondError::UnexpectedEof(self.pos))?;
         self.pos += 1;
         Ok(b)
     }
 
     fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], BondError> {
-        self.ensure(n)?;
-        let slice = &self.data[self.pos..self.pos + n];
+        let slice = self
+            .pos
+            .checked_add(n)
+            .and_then(|end| self.data.get(self.pos..end))
+            .ok_or(BondError::UnexpectedEof(self.pos))?;
         self.pos += n;
         Ok(slice)
     }
 
     /// Reads exactly `n` bytes as a borrowed slice, advancing the cursor.
-    pub fn read_bytes_slice(&mut self, n: usize) -> Result<&'a [u8], BondError> {
+    pub(crate) fn read_bytes_slice(&mut self, n: usize) -> Result<&'a [u8], BondError> {
         self.read_bytes(n)
     }
 
     // -- Marshaled header --
 
-    pub fn read_marshaled_header(&mut self) -> Result<(), BondError> {
+    pub(crate) fn read_marshaled_header(&mut self) -> Result<(), BondError> {
         let magic = self.read_bytes(2)?;
         if magic != COMPACT_BINARY_MAGIC {
             return Err(BondError::InvalidHeader);
@@ -72,7 +72,7 @@ impl<'a> CompactBinaryReader<'a> {
 
     // -- Field headers --
 
-    pub fn read_field_header(&mut self) -> Result<FieldHeader, BondError> {
+    pub(crate) fn read_field_header(&mut self) -> Result<FieldHeader, BondError> {
         let raw = self.read_byte()?;
 
         let type_id = raw & 0x1F;
@@ -90,17 +90,16 @@ impl<'a> CompactBinaryReader<'a> {
             return Ok(FieldHeader::StopBase);
         }
 
-        let bond_type =
-            BondType::try_from(type_id).map_err(|_| BondError::InvalidTypeId(type_id))?;
+        let bond_type = BondType::try_from(type_id).map_err(BondError::InvalidTypeId)?;
 
         let id = match id_bits {
             0xE0 => {
-                let lo = self.read_byte()? as u16;
-                let hi = self.read_byte()? as u16;
-                (hi << 8) | lo
+                let lo = self.read_byte()?;
+                let hi = self.read_byte()?;
+                u16::from_le_bytes([lo, hi])
             }
-            0xC0 => self.read_byte()? as u16,
-            _ => (id_bits >> 5) as u16,
+            0xC0 => u16::from(self.read_byte()?),
+            _ => u16::from(id_bits >> 5),
         };
 
         Ok(FieldHeader::Field { id, bond_type })
@@ -108,105 +107,55 @@ impl<'a> CompactBinaryReader<'a> {
 
     // -- Primitive readers --
 
-    pub fn read_bool(&mut self) -> Result<bool, BondError> {
+    pub(crate) fn read_bool(&mut self) -> Result<bool, BondError> {
         Ok(self.read_byte()? != 0)
     }
 
-    pub fn read_uint8(&mut self) -> Result<u8, BondError> {
-        self.read_byte()
+    pub(crate) fn read_int8(&mut self) -> Result<i8, BondError> {
+        Ok(self.read_byte()?.cast_signed())
     }
 
-    pub fn read_int8(&mut self) -> Result<i8, BondError> {
-        Ok(self.read_byte()? as i8)
-    }
-
-    pub fn read_uint16(&mut self) -> Result<u16, BondError> {
+    pub(crate) fn read_int16(&mut self) -> Result<i16, BondError> {
         let (val, new_pos) = read_varint(self.data, self.pos)?;
         self.pos = new_pos;
-        Ok(val as u16)
+        Ok(decode_zigzag_i16(u16::try_from(val)?))
     }
 
-    pub fn read_int16(&mut self) -> Result<i16, BondError> {
+    pub(crate) fn read_uint32(&mut self) -> Result<u32, BondError> {
         let (val, new_pos) = read_varint(self.data, self.pos)?;
         self.pos = new_pos;
-        Ok(decode_zigzag_i16(val as u16))
+        Ok(u32::try_from(val)?)
     }
 
-    pub fn read_uint32(&mut self) -> Result<u32, BondError> {
+    pub(crate) fn read_int32(&mut self) -> Result<i32, BondError> {
         let (val, new_pos) = read_varint(self.data, self.pos)?;
         self.pos = new_pos;
-        Ok(val as u32)
+        Ok(decode_zigzag_i32(u32::try_from(val)?))
     }
 
-    pub fn read_int32(&mut self) -> Result<i32, BondError> {
-        let (val, new_pos) = read_varint(self.data, self.pos)?;
-        self.pos = new_pos;
-        Ok(decode_zigzag_i32(val as u32))
-    }
-
-    pub fn read_uint64(&mut self) -> Result<u64, BondError> {
+    pub(crate) fn read_uint64(&mut self) -> Result<u64, BondError> {
         let (val, new_pos) = read_varint(self.data, self.pos)?;
         self.pos = new_pos;
         Ok(val)
     }
 
-    pub fn read_int64(&mut self) -> Result<i64, BondError> {
-        let (val, new_pos) = read_varint(self.data, self.pos)?;
-        self.pos = new_pos;
-        Ok(decode_zigzag_i64(val))
-    }
-
-    pub fn read_float(&mut self) -> Result<f32, BondError> {
-        let b = self.read_bytes(4)?;
-        Ok(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
-    pub fn read_double(&mut self) -> Result<f64, BondError> {
-        let b = self.read_bytes(8)?;
-        Ok(f64::from_le_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]))
-    }
-
-    pub fn read_string(&mut self) -> Result<String, BondError> {
-        let len = self.read_uint32()? as usize;
-        let bytes = self.read_bytes(len)?;
-        String::from_utf8(bytes.to_vec()).map_err(|_| BondError::InvalidUtf8)
-    }
-
-    pub fn read_wstring(&mut self) -> Result<String, BondError> {
-        let len = self.read_uint32()? as usize; // number of UTF-16 code units
-        let byte_len = len.checked_mul(2).ok_or(BondError::VarintOverflow)?;
-        let bytes = self.read_bytes(byte_len)?;
-        let utf16: Vec<u16> = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|c| u16::from_le_bytes(*c))
-            .collect();
-        String::from_utf16(&utf16).map_err(|_| BondError::InvalidUtf16)
-    }
-
     // -- Container headers --
 
-    /// Reads a list or set header. Returns (element_type, count).
-    pub fn read_container_header(&mut self) -> Result<(BondType, u32), BondError> {
+    /// Reads a list or set header. Returns (`element_type`, count).
+    pub(crate) fn read_container_header(&mut self) -> Result<(BondType, u32), BondError> {
         let raw = self.read_byte()?;
         let type_id = raw & 0x1F;
-        let element_type =
-            BondType::try_from(type_id).map_err(|_| BondError::InvalidTypeId(type_id))?;
+        let element_type = BondType::try_from(type_id).map_err(BondError::InvalidTypeId)?;
         let count = self.read_uint32()?;
         Ok((element_type, count))
     }
 
-    /// Reads a map header. Returns (key_type, value_type, count).
-    pub fn read_map_header(&mut self) -> Result<(BondType, BondType, u32), BondError> {
+    /// Reads a map header. Returns (`key_type`, `value_type`, count).
+    pub(crate) fn read_map_header(&mut self) -> Result<(BondType, BondType, u32), BondError> {
         let key_raw = self.read_byte()?;
-        let key_type =
-            BondType::try_from(key_raw & 0x1F).map_err(|_| BondError::InvalidTypeId(key_raw))?;
+        let key_type = BondType::try_from(key_raw & 0x1F).map_err(BondError::InvalidTypeId)?;
         let val_raw = self.read_byte()?;
-        let val_type =
-            BondType::try_from(val_raw & 0x1F).map_err(|_| BondError::InvalidTypeId(val_raw))?;
+        let val_type = BondType::try_from(val_raw & 0x1F).map_err(BondError::InvalidTypeId)?;
         let count = self.read_uint32()?;
         Ok((key_type, val_type, count))
     }
@@ -214,7 +163,7 @@ impl<'a> CompactBinaryReader<'a> {
     // -- Skipping --
 
     /// Advances past a value of the given Bond type without allocating.
-    pub fn skip_value(&mut self, bond_type: BondType) -> Result<(), BondError> {
+    pub(crate) fn skip_value(&mut self, bond_type: BondType) -> Result<(), BondError> {
         match bond_type {
             BondType::Bool | BondType::UInt8 | BondType::Int8 => {
                 self.read_byte()?;
@@ -263,23 +212,82 @@ impl<'a> CompactBinaryReader<'a> {
         Ok(())
     }
 
-    /// Advances past an entire struct (field headers + values) until BT_STOP, without allocating.
-    pub fn skip_struct(&mut self) -> Result<(), BondError> {
+    /// Advances past an entire struct (field headers + values) until `BT_STOP`,
+    /// without allocating.
+    pub(crate) fn skip_struct(&mut self) -> Result<(), BondError> {
         loop {
             match self.read_field_header()? {
                 FieldHeader::Stop => return Ok(()),
-                FieldHeader::StopBase => continue,
+                FieldHeader::StopBase => {}
                 FieldHeader::Field { bond_type, .. } => {
                     self.skip_value(bond_type)?;
                 }
             }
         }
     }
+}
+
+#[cfg(test)]
+impl CompactBinaryReader<'_> {
+    pub(super) fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], BondError> {
+        let pos = self.pos;
+        self.read_bytes(N)?
+            .first_chunk::<N>()
+            .copied()
+            .ok_or(BondError::UnexpectedEof(pos))
+    }
+
+    fn read_uint8(&mut self) -> Result<u8, BondError> {
+        self.read_byte()
+    }
+
+    fn read_uint16(&mut self) -> Result<u16, BondError> {
+        let (val, new_pos) = read_varint(self.data, self.pos)?;
+        self.pos = new_pos;
+        Ok(u16::try_from(val)?)
+    }
+
+    fn read_int64(&mut self) -> Result<i64, BondError> {
+        let (val, new_pos) = read_varint(self.data, self.pos)?;
+        self.pos = new_pos;
+        Ok(decode_zigzag_i64(val))
+    }
+
+    fn read_float(&mut self) -> Result<f32, BondError> {
+        Ok(f32::from_le_bytes(self.read_array()?))
+    }
+
+    fn read_double(&mut self) -> Result<f64, BondError> {
+        Ok(f64::from_le_bytes(self.read_array()?))
+    }
+
+    fn read_string(&mut self) -> Result<String, BondError> {
+        let len = self.read_uint32()? as usize;
+        let bytes = self.read_bytes(len)?;
+        Ok(String::from_utf8(bytes.to_vec())?)
+    }
+
+    fn read_wstring(&mut self) -> Result<String, BondError> {
+        let len = self.read_uint32()? as usize; // number of UTF-16 code units
+        let byte_len = len.checked_mul(2).ok_or(BondError::VarintOverflow)?;
+        let bytes = self.read_bytes(byte_len)?;
+        let utf16: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
+            .collect();
+        Ok(String::from_utf16(&utf16)?)
+    }
 
     // -- High-level readers --
 
     /// Reads a single value of the given Bond type.
-    pub fn read_value(&mut self, bond_type: BondType) -> Result<BondValue, BondError> {
+    fn read_value(&mut self, bond_type: BondType) -> Result<BondValue, BondError> {
         match bond_type {
             BondType::Bool => Ok(BondValue::Bool(self.read_bool()?)),
             BondType::UInt8 => Ok(BondValue::UInt8(self.read_uint8()?)),
@@ -334,13 +342,13 @@ impl<'a> CompactBinaryReader<'a> {
         }
     }
 
-    /// Reads all fields of a struct until BT_STOP, returning a BondStruct.
-    pub fn read_struct(&mut self) -> Result<BondStruct, BondError> {
+    /// Reads all fields of a struct until `BT_STOP`, returning a `BondStruct`.
+    pub(super) fn read_struct(&mut self) -> Result<BondStruct, BondError> {
         let mut fields = Vec::new();
         loop {
             match self.read_field_header()? {
                 FieldHeader::Stop => break,
-                FieldHeader::StopBase => continue,
+                FieldHeader::StopBase => {}
                 FieldHeader::Field { id, bond_type } => {
                     let value = self.read_value(bond_type)?;
                     fields.push((id, value));
@@ -359,7 +367,7 @@ mod tests {
     fn read_marshaled_header() {
         let data = [0x43, 0x42, 0x01, 0x00];
         let mut reader = CompactBinaryReader::new(&data);
-        reader.read_marshaled_header().unwrap();
+        reader.read_marshaled_header().expect("header is valid");
         assert_eq!(reader.remaining(), 0);
     }
 
@@ -375,7 +383,7 @@ mod tests {
         let data = [0x02];
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
-            reader.read_field_header().unwrap(),
+            reader.read_field_header().expect("field header decodes"),
             FieldHeader::Field {
                 id: 0,
                 bond_type: BondType::Bool
@@ -385,7 +393,7 @@ mod tests {
         let data = [0x2A];
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
-            reader.read_field_header().unwrap(),
+            reader.read_field_header().expect("field header decodes"),
             FieldHeader::Field {
                 id: 1,
                 bond_type: BondType::Struct
@@ -395,7 +403,7 @@ mod tests {
         let data = [0xA6];
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
-            reader.read_field_header().unwrap(),
+            reader.read_field_header().expect("field header decodes"),
             FieldHeader::Field {
                 id: 5,
                 bond_type: BondType::UInt64
@@ -408,7 +416,7 @@ mod tests {
         let data = [0xC2, 0x0A];
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
-            reader.read_field_header().unwrap(),
+            reader.read_field_header().expect("field header decodes"),
             FieldHeader::Field {
                 id: 10,
                 bond_type: BondType::Bool
@@ -418,7 +426,7 @@ mod tests {
         let data = [0xCF, 0x28];
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
-            reader.read_field_header().unwrap(),
+            reader.read_field_header().expect("field header decodes"),
             FieldHeader::Field {
                 id: 40,
                 bond_type: BondType::Int16
@@ -431,7 +439,7 @@ mod tests {
         let data = [0xE5, 0x2C, 0x01];
         let mut reader = CompactBinaryReader::new(&data);
         assert_eq!(
-            reader.read_field_header().unwrap(),
+            reader.read_field_header().expect("field header decodes"),
             FieldHeader::Field {
                 id: 300,
                 bond_type: BondType::UInt32
@@ -443,14 +451,20 @@ mod tests {
     fn read_stop() {
         let data = [0x00];
         let mut reader = CompactBinaryReader::new(&data);
-        assert_eq!(reader.read_field_header().unwrap(), FieldHeader::Stop);
+        assert_eq!(
+            reader.read_field_header().expect("field header decodes"),
+            FieldHeader::Stop
+        );
     }
 
     #[test]
     fn read_stop_base() {
         let data = [0x01];
         let mut reader = CompactBinaryReader::new(&data);
-        assert_eq!(reader.read_field_header().unwrap(), FieldHeader::StopBase);
+        assert_eq!(
+            reader.read_field_header().expect("field header decodes"),
+            FieldHeader::StopBase
+        );
     }
 
     #[test]
@@ -464,7 +478,7 @@ mod tests {
         ];
 
         let mut reader = CompactBinaryReader::new(&data);
-        let s = reader.read_struct().unwrap();
+        let s = reader.read_struct().expect("struct decodes");
         assert_eq!(s.fields.len(), 2);
         assert_eq!(s.fields[0], (0, BondValue::Bool(true)));
         assert_eq!(s.fields[1], (1, BondValue::UInt64(42)));
@@ -480,7 +494,7 @@ mod tests {
             0x00, // BT_STOP (outer)
         ];
         let mut reader = CompactBinaryReader::new(&data);
-        let s = reader.read_struct().unwrap();
+        let s = reader.read_struct().expect("struct decodes");
         assert_eq!(s.fields.len(), 1);
         if let BondValue::Struct(inner) = &s.fields[0].1 {
             assert_eq!(inner.fields.len(), 1);
@@ -500,7 +514,7 @@ mod tests {
             0x00, // BT_STOP
         ];
         let mut reader = CompactBinaryReader::new(&data);
-        let s = reader.read_struct().unwrap();
+        let s = reader.read_struct().expect("struct decodes");
         assert_eq!(s.fields.len(), 1);
         if let BondValue::List {
             element_type,
@@ -543,11 +557,12 @@ mod tests {
         use crate::bond::writer::CompactBinaryWriter;
 
         let mut w = CompactBinaryWriter::new();
-        w.write_string("hello world");
+        w.write_string("hello world")
+            .expect("string length fits in u32");
         let bytes = w.into_bytes();
 
         let mut r = CompactBinaryReader::new(&bytes);
-        assert_eq!(r.read_string().unwrap(), "hello world");
+        assert_eq!(r.read_string().expect("string decodes"), "hello world");
         assert_eq!(r.remaining(), 0);
     }
 
@@ -561,8 +576,12 @@ mod tests {
         let bytes = w.into_bytes();
 
         let mut r = CompactBinaryReader::new(&bytes);
-        assert!((r.read_float().unwrap() - std::f32::consts::PI).abs() < f32::EPSILON);
-        assert!((r.read_double().unwrap() - std::f64::consts::E).abs() < f64::EPSILON);
+        assert!(
+            (r.read_float().expect("float decodes") - std::f32::consts::PI).abs() < f32::EPSILON
+        );
+        assert!(
+            (r.read_double().expect("double decodes") - std::f64::consts::E).abs() < f64::EPSILON
+        );
         assert_eq!(r.remaining(), 0);
     }
 

@@ -1,130 +1,144 @@
-use super::types::*;
-use super::value::*;
-use super::varint::*;
+#[cfg(test)]
+use super::BondError;
+use super::types::BondType;
+use super::types::COMPACT_BINARY_MAGIC;
+use super::types::COMPACT_BINARY_V1;
+#[cfg(test)]
+use super::value::BondStruct;
+#[cfg(test)]
+use super::value::BondValue;
+use super::varint::encode_zigzag_i16;
+use super::varint::encode_zigzag_i32;
+#[cfg(test)]
+use super::varint::encode_zigzag_i64;
+use super::varint::write_varint;
 
-/// Serializer for Bond CompactBinary v1 payloads.
+/// Serializer for Bond `CompactBinary` v1 payloads.
 #[derive(Default)]
-pub struct CompactBinaryWriter {
+pub(crate) struct CompactBinaryWriter {
     buf: Vec<u8>,
 }
 
 impl CompactBinaryWriter {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub fn into_bytes(self) -> Vec<u8> {
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.buf
     }
 
     // -- Marshaled header --
 
-    pub fn write_marshaled_header(&mut self) {
+    pub(crate) fn write_marshaled_header(&mut self) {
         self.buf.extend_from_slice(&COMPACT_BINARY_MAGIC);
         self.buf.extend_from_slice(&COMPACT_BINARY_V1);
     }
 
     // -- Field headers --
 
-    pub fn write_field_header(&mut self, id: u16, bond_type: BondType) {
+    pub(crate) fn write_field_header(&mut self, id: u16, bond_type: BondType) {
         let type_byte = bond_type as u8;
-        debug_assert!(type_byte & 0x1F == type_byte);
+        debug_assert_eq!(type_byte & 0x1F, type_byte);
+        let [lo, hi] = id.to_le_bytes();
 
         if id <= 5 {
-            self.buf.push(type_byte | ((id as u8) << 5));
+            self.buf.push(type_byte | (lo << 5));
         } else if id <= 0xFF {
             self.buf.push(type_byte | (0x06 << 5));
-            self.buf.push(id as u8);
+            self.buf.push(lo);
         } else {
             self.buf.push(type_byte | (0x07 << 5));
-            self.buf.push(id as u8); // low byte
-            self.buf.push((id >> 8) as u8); // high byte
+            self.buf.push(lo);
+            self.buf.push(hi);
         }
     }
 
-    pub fn write_stop(&mut self) {
+    pub(crate) fn write_stop(&mut self) {
         self.buf.push(0x00);
-    }
-
-    pub fn write_stop_base(&mut self) {
-        self.buf.push(0x01);
     }
 
     // -- Primitive writers --
 
-    pub fn write_bool(&mut self, val: bool) {
-        self.buf.push(val as u8);
+    pub(crate) fn write_bool(&mut self, val: bool) {
+        self.buf.push(u8::from(val));
     }
 
-    pub fn write_uint8(&mut self, val: u8) {
-        self.buf.push(val);
-    }
-
-    pub fn write_int8(&mut self, val: i8) {
-        self.buf.push(val as u8);
+    pub(crate) fn write_int8(&mut self, val: i8) {
+        self.buf.push(val.cast_unsigned());
     }
 
     /// Appends raw bytes directly to the output buffer.
-    /// Useful for bulk-writing contiguous fixed-width elements (e.g. list<int8>).
-    pub fn write_raw_bytes(&mut self, bytes: &[u8]) {
+    /// Useful for bulk-writing contiguous fixed-width elements (e.g.
+    /// list<int8>).
+    pub(crate) fn write_raw_bytes(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
     }
 
-    pub fn write_uint16(&mut self, val: u16) {
-        write_varint(&mut self.buf, val as u64);
+    pub(crate) fn write_int16(&mut self, val: i16) {
+        write_varint(&mut self.buf, u64::from(encode_zigzag_i16(val)));
     }
 
-    pub fn write_int16(&mut self, val: i16) {
-        write_varint(&mut self.buf, encode_zigzag_i16(val) as u64);
+    pub(crate) fn write_uint32(&mut self, val: u32) {
+        write_varint(&mut self.buf, u64::from(val));
     }
 
-    pub fn write_uint32(&mut self, val: u32) {
-        write_varint(&mut self.buf, val as u64);
+    pub(crate) fn write_int32(&mut self, val: i32) {
+        write_varint(&mut self.buf, u64::from(encode_zigzag_i32(val)));
     }
 
-    pub fn write_int32(&mut self, val: i32) {
-        write_varint(&mut self.buf, encode_zigzag_i32(val) as u64);
-    }
-
-    pub fn write_uint64(&mut self, val: u64) {
+    pub(crate) fn write_uint64(&mut self, val: u64) {
         write_varint(&mut self.buf, val);
-    }
-
-    pub fn write_int64(&mut self, val: i64) {
-        write_varint(&mut self.buf, encode_zigzag_i64(val));
-    }
-
-    pub fn write_float(&mut self, val: f32) {
-        self.buf.extend_from_slice(&val.to_le_bytes());
-    }
-
-    pub fn write_double(&mut self, val: f64) {
-        self.buf.extend_from_slice(&val.to_le_bytes());
-    }
-
-    pub fn write_string(&mut self, val: &str) {
-        self.write_uint32(val.len() as u32);
-        self.buf.extend_from_slice(val.as_bytes());
-    }
-
-    pub fn write_wstring(&mut self, val: &str) {
-        let utf16: Vec<u16> = val.encode_utf16().collect();
-        self.write_uint32(utf16.len() as u32);
-        for unit in &utf16 {
-            self.buf.extend_from_slice(&unit.to_le_bytes());
-        }
     }
 
     // -- Container headers --
 
     /// Writes a list or set header (v1 format: type byte + varint count).
-    pub fn write_container_header(&mut self, element_type: BondType, count: u32) {
+    pub(crate) fn write_container_header(&mut self, element_type: BondType, count: u32) {
         self.buf.push(element_type as u8);
         self.write_uint32(count);
     }
+}
+
+#[cfg(test)]
+impl CompactBinaryWriter {
+    fn write_uint8(&mut self, val: u8) {
+        self.buf.push(val);
+    }
+
+    fn write_uint16(&mut self, val: u16) {
+        write_varint(&mut self.buf, u64::from(val));
+    }
+
+    fn write_int64(&mut self, val: i64) {
+        write_varint(&mut self.buf, encode_zigzag_i64(val));
+    }
+
+    pub(super) fn write_float(&mut self, val: f32) {
+        self.buf.extend_from_slice(&val.to_le_bytes());
+    }
+
+    pub(super) fn write_double(&mut self, val: f64) {
+        self.buf.extend_from_slice(&val.to_le_bytes());
+    }
+
+    pub(super) fn write_string(&mut self, val: &str) -> Result<(), BondError> {
+        self.write_uint32(u32::try_from(val.len())?);
+        self.buf.extend_from_slice(val.as_bytes());
+        Ok(())
+    }
+
+    fn write_wstring(&mut self, val: &str) -> Result<(), BondError> {
+        let utf16: Vec<u16> = val.encode_utf16().collect();
+        self.write_uint32(u32::try_from(utf16.len())?);
+        for unit in &utf16 {
+            self.buf.extend_from_slice(&unit.to_le_bytes());
+        }
+        Ok(())
+    }
 
     /// Writes a map header (key type + value type + varint count).
-    pub fn write_map_header(&mut self, key_type: BondType, value_type: BondType, count: u32) {
+    fn write_map_header(&mut self, key_type: BondType, value_type: BondType, count: u32) {
         self.buf.push(key_type as u8);
         self.buf.push(value_type as u8);
         self.write_uint32(count);
@@ -132,8 +146,8 @@ impl CompactBinaryWriter {
 
     // -- High-level writers --
 
-    /// Writes a single BondValue.
-    pub fn write_value(&mut self, val: &BondValue) {
+    /// Writes a single `BondValue`.
+    fn write_value(&mut self, val: &BondValue) -> Result<(), BondError> {
         match val {
             BondValue::Bool(v) => self.write_bool(*v),
             BondValue::UInt8(v) => self.write_uint8(*v),
@@ -146,25 +160,20 @@ impl CompactBinaryWriter {
             BondValue::Int64(v) => self.write_int64(*v),
             BondValue::Float(v) => self.write_float(*v),
             BondValue::Double(v) => self.write_double(*v),
-            BondValue::String(v) => self.write_string(v),
-            BondValue::WString(v) => self.write_wstring(v),
-            BondValue::Struct(s) => self.write_struct(s),
+            BondValue::String(v) => self.write_string(v)?,
+            BondValue::WString(v) => self.write_wstring(v)?,
+            BondValue::Struct(s) => self.write_struct(s)?,
             BondValue::List {
                 element_type,
                 elements,
-            } => {
-                self.write_container_header(*element_type, elements.len() as u32);
-                for elem in elements {
-                    self.write_value(elem);
-                }
             }
-            BondValue::Set {
+            | BondValue::Set {
                 element_type,
                 elements,
             } => {
-                self.write_container_header(*element_type, elements.len() as u32);
+                self.write_container_header(*element_type, u32::try_from(elements.len())?);
                 for elem in elements {
-                    self.write_value(elem);
+                    self.write_value(elem)?;
                 }
             }
             BondValue::Map {
@@ -172,22 +181,24 @@ impl CompactBinaryWriter {
                 value_type,
                 entries,
             } => {
-                self.write_map_header(*key_type, *value_type, entries.len() as u32);
+                self.write_map_header(*key_type, *value_type, u32::try_from(entries.len())?);
                 for (k, v) in entries {
-                    self.write_value(k);
-                    self.write_value(v);
+                    self.write_value(k)?;
+                    self.write_value(v)?;
                 }
             }
         }
+        Ok(())
     }
 
-    /// Writes a BondStruct (fields + BT_STOP).
-    pub fn write_struct(&mut self, s: &BondStruct) {
+    /// Writes a `BondStruct` (fields + `BT_STOP`).
+    pub(super) fn write_struct(&mut self, s: &BondStruct) -> Result<(), BondError> {
         for (id, val) in &s.fields {
             self.write_field_header(*id, val.bond_type());
-            self.write_value(val);
+            self.write_value(val)?;
         }
         self.write_stop();
+        Ok(())
     }
 }
 
@@ -232,7 +243,7 @@ mod tests {
         let original = BondStruct {
             fields: vec![
                 (0, BondValue::Bool(true)),
-                (1, BondValue::UInt64(1742540908)),
+                (1, BondValue::UInt64(1_742_540_908)),
                 (10, BondValue::Int16(2790)),
                 (
                     20,
@@ -244,11 +255,11 @@ mod tests {
         };
 
         let mut w = CompactBinaryWriter::new();
-        w.write_struct(&original);
+        w.write_struct(&original).expect("struct encodes");
         let bytes = w.into_bytes();
 
         let mut r = CompactBinaryReader::new(&bytes);
-        let decoded = r.read_struct().unwrap();
+        let decoded = r.read_struct().expect("struct decodes");
         assert_eq!(r.remaining(), 0);
         assert_eq!(original, decoded);
     }
@@ -266,11 +277,11 @@ mod tests {
         };
 
         let mut w = CompactBinaryWriter::new();
-        w.write_struct(&original);
+        w.write_struct(&original).expect("struct encodes");
         let bytes = w.into_bytes();
 
         let mut r = CompactBinaryReader::new(&bytes);
-        let decoded = r.read_struct().unwrap();
+        let decoded = r.read_struct().expect("struct decodes");
         assert_eq!(original, decoded);
     }
 
@@ -291,11 +302,11 @@ mod tests {
         };
 
         let mut w = CompactBinaryWriter::new();
-        w.write_struct(&original);
+        w.write_struct(&original).expect("struct encodes");
         let bytes = w.into_bytes();
 
         let mut r = CompactBinaryReader::new(&bytes);
-        let decoded = r.read_struct().unwrap();
+        let decoded = r.read_struct().expect("struct decodes");
         assert_eq!(original, decoded);
     }
 }

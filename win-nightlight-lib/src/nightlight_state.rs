@@ -1,11 +1,18 @@
+//! Night Light on/off state.
+
+use crate::bond::BondError;
+use crate::bond::BondType;
+use crate::bond::CompactBinaryReader;
+use crate::bond::CompactBinaryWriter;
+use crate::bond::FieldHeader;
+use crate::cloudstore;
 use chrono::Utc;
 
-use crate::bond::*;
-use crate::cloudstore;
-
-/// Night Light state stored in the registry as a Bond CompactBinary v1 payload.
+/// Night Light state stored in the registry as a Bond `CompactBinary` v1
+/// payload.
 ///
-/// The binary format is a CloudStore wrapper containing an inner Bond struct with fields:
+/// The binary format is a `CloudStore` wrapper containing an inner Bond struct
+/// with fields:
 /// - Field 0:  int32  — enabled flag (presence = force-enabled)
 /// - Field 10: int32  — initialized marker (always 1)
 /// - Field 20: uint64 — last transition FILETIME
@@ -16,17 +23,23 @@ pub struct NightlightState {
     /// The last-modified Unix timestamp in seconds
     pub timestamp: u64,
     /// Whether the nightlight is (force) enabled or not.
-    /// If true, then the nightlight will be enabled regardless of the schedule settings.
+    /// If true, then the nightlight will be enabled regardless of the schedule
+    /// settings.
     pub is_enabled: bool,
     /// Always 1; likely a "data valid" or schema version marker.
     pub initialized: i32,
-    /// Windows FILETIME of the last state transition (toggle or scheduled change).
-    /// 100-nanosecond intervals since 1601-01-01 UTC.
+    /// Windows FILETIME of the last state transition (toggle or scheduled
+    /// change). 100-nanosecond intervals since 1601-01-01 UTC.
     pub last_transition_filetime: u64,
 }
 
 impl NightlightState {
-    /// Deserializes a [NightlightState] struct from a byte slice.
+    /// Deserializes a [`NightlightState`] struct from a byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BondError`] if `data` is not a valid `CloudStore` Night
+    /// Light state payload.
     pub fn deserialize_from_bytes(data: &[u8]) -> Result<NightlightState, BondError> {
         let (timestamp, inner_payload) = cloudstore::cloudstore_unwrap(data)?;
 
@@ -40,7 +53,7 @@ impl NightlightState {
         loop {
             match reader.read_field_header()? {
                 FieldHeader::Stop => break,
-                FieldHeader::StopBase => continue,
+                FieldHeader::StopBase => {}
                 FieldHeader::Field {
                     id: 0,
                     bond_type: BondType::Int32,
@@ -74,8 +87,13 @@ impl NightlightState {
         })
     }
 
-    /// Serializes a [NightlightState] struct into a byte slice.
-    pub fn serialize_to_bytes(&self) -> Vec<u8> {
+    /// Serializes a [`NightlightState`] struct into a byte vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BondError::IntegerOutOfRange`] if the encoded payload exceeds
+    /// the Bond `list` length range.
+    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, BondError> {
         let mut inner = CompactBinaryWriter::new();
         inner.write_marshaled_header();
 
@@ -98,17 +116,19 @@ impl NightlightState {
         cloudstore::cloudstore_wrap(self.timestamp, &inner.into_bytes())
     }
 
-    /// Updates both the outer CloudStore timestamp and the inner field 20
-    /// transition FILETIME from a single "now" reading, so they stay consistent.
+    /// Updates both the outer `CloudStore` timestamp and the inner field 20
+    /// transition FILETIME from a single "now" reading, so they stay
+    /// consistent.
     fn update_transition_timestamps(&mut self) {
         let now = Utc::now();
-        self.timestamp = now.timestamp() as u64;
-        self.last_transition_filetime =
-            unix_to_filetime(now.timestamp() as u64, now.timestamp_subsec_nanos());
+        let secs = u64::try_from(now.timestamp()).unwrap_or_default();
+        self.timestamp = secs;
+        self.last_transition_filetime = unix_to_filetime(secs, now.timestamp_subsec_nanos());
     }
 
     /// Enables the nightlight and updates the transition timestamps.
-    /// Returns true if a change was made (i.e. the nightlight was previously disabled).
+    /// Returns true if a change was made (i.e. the nightlight was previously
+    /// disabled).
     pub fn enable(&mut self) -> bool {
         if self.is_enabled {
             return false;
@@ -119,7 +139,8 @@ impl NightlightState {
     }
 
     /// Disables the nightlight and updates the transition timestamps.
-    /// Returns true if a change was made (i.e. the nightlight was previously enabled).
+    /// Returns true if a change was made (i.e. the nightlight was previously
+    /// enabled).
     pub fn disable(&mut self) -> bool {
         if !self.is_enabled {
             return false;
@@ -130,7 +151,8 @@ impl NightlightState {
     }
 }
 
-/// Seconds between the Windows FILETIME epoch (1601-01-01) and the Unix epoch (1970-01-01).
+/// Seconds between the Windows FILETIME epoch (1601-01-01) and the Unix epoch
+/// (1970-01-01).
 const FILETIME_UNIX_EPOCH_OFFSET_SECS: u64 = 11_644_473_600;
 /// Number of 100-nanosecond intervals per second.
 const FILETIME_TICKS_PER_SEC: u64 = 10_000_000;
@@ -157,12 +179,13 @@ mod tests {
         0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE6, 0xED, 0x01, 0x00, 0x00, 0x00, 0x00,
     ];
 
-    // Decode the FILETIME from the test data varint bytes [0xA9, 0xF6, 0xE2, 0xD3, 0xEF, 0xEA, 0xE6, 0xED, 0x01]
+    // Decode the FILETIME from the test data varint bytes [0xA9, 0xF6, 0xE2,
+    // 0xD3, 0xEF, 0xEA, 0xE6, 0xED, 0x01]
     const EXPECTED_FILETIME: u64 = 133_871_411_809_270_569;
 
     fn expected_disabled() -> NightlightState {
         NightlightState {
-            timestamp: 1742670473,
+            timestamp: 1_742_670_473,
             is_enabled: false,
             initialized: 1,
             last_transition_filetime: EXPECTED_FILETIME,
@@ -171,7 +194,7 @@ mod tests {
 
     fn expected_enabled() -> NightlightState {
         NightlightState {
-            timestamp: 1742670473,
+            timestamp: 1_742_670_473,
             is_enabled: true,
             initialized: 1,
             last_transition_filetime: EXPECTED_FILETIME,
@@ -180,19 +203,25 @@ mod tests {
 
     #[test]
     fn test_serialize_to_bytes() {
-        let bytes_disabled = expected_disabled().serialize_to_bytes();
+        let bytes_disabled = expected_disabled()
+            .serialize_to_bytes()
+            .expect("state serializes");
         assert_eq!(bytes_disabled, BYTES_DISABLED);
 
-        let bytes_enabled = expected_enabled().serialize_to_bytes();
+        let bytes_enabled = expected_enabled()
+            .serialize_to_bytes()
+            .expect("state serializes");
         assert_eq!(bytes_enabled, BYTES_ENABLED);
     }
 
     #[test]
     fn test_deserialize_from_bytes() {
-        let state_disabled = NightlightState::deserialize_from_bytes(&BYTES_DISABLED).unwrap();
+        let state_disabled =
+            NightlightState::deserialize_from_bytes(&BYTES_DISABLED).expect("fixture deserializes");
         assert_eq!(state_disabled, expected_disabled());
 
-        let state_enabled = NightlightState::deserialize_from_bytes(&BYTES_ENABLED).unwrap();
+        let state_enabled =
+            NightlightState::deserialize_from_bytes(&BYTES_ENABLED).expect("fixture deserializes");
         assert_eq!(state_enabled, expected_enabled());
     }
 
@@ -214,7 +243,7 @@ mod tests {
         // Both the outer timestamp and the inner FILETIME must advance off the
         // stale loaded values (the test fixture predates "now").
         assert_ne!(state.last_transition_filetime, EXPECTED_FILETIME);
-        assert_ne!(state.timestamp, 1742670473);
+        assert_ne!(state.timestamp, 1_742_670_473);
     }
 
     #[test]
@@ -223,19 +252,27 @@ mod tests {
         assert!(state.disable());
         assert!(!state.is_enabled);
         assert_ne!(state.last_transition_filetime, EXPECTED_FILETIME);
-        assert_ne!(state.timestamp, 1742670473);
+        assert_ne!(state.timestamp, 1_742_670_473);
     }
 
     #[test]
     fn test_serde_roundtrip() {
-        let state_disabled = NightlightState::deserialize_from_bytes(&BYTES_DISABLED).unwrap();
-        let bytes = state_disabled.serialize_to_bytes();
-        let state_deserialized = NightlightState::deserialize_from_bytes(&bytes).unwrap();
+        let state_disabled =
+            NightlightState::deserialize_from_bytes(&BYTES_DISABLED).expect("fixture deserializes");
+        let bytes = state_disabled
+            .serialize_to_bytes()
+            .expect("state serializes");
+        let state_deserialized =
+            NightlightState::deserialize_from_bytes(&bytes).expect("state deserializes");
         assert_eq!(state_deserialized, state_disabled);
 
-        let state_enabled = NightlightState::deserialize_from_bytes(&BYTES_ENABLED).unwrap();
-        let bytes = state_enabled.serialize_to_bytes();
-        let state_deserialized = NightlightState::deserialize_from_bytes(&bytes).unwrap();
+        let state_enabled =
+            NightlightState::deserialize_from_bytes(&BYTES_ENABLED).expect("fixture deserializes");
+        let bytes = state_enabled
+            .serialize_to_bytes()
+            .expect("state serializes");
+        let state_deserialized =
+            NightlightState::deserialize_from_bytes(&bytes).expect("state deserializes");
         assert_eq!(state_deserialized, state_enabled);
     }
 }

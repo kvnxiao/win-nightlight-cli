@@ -1,4 +1,4 @@
-# Installs Rust and checks formatting, linting, and packaging
+# Runs the shared formatting, lint, test, doc, dependency, MSRV, and packaging checks as parallel jobs
 
 name: Lint Rust
 
@@ -8,33 +8,152 @@ on:
       - main
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [windows-latest]
-
-    runs-on: ${{ matrix.os }}
-
+  lint:
+    runs-on: windows-latest
     steps:
-      - name: Disable git core.autocrlf on Windows
-        if: matrix.os == 'windows-latest'
+      # rustfmt enforces Unix newlines; autocrlf would rewrite them on checkout.
+      - name: Disable git core.autocrlf
         run: git config --global core.autocrlf false
 
       - name: Checkout repository code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
+      - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
 
-      - name: Run rustfmt check
-        run: cargo fmt --all -- --check
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
 
-      - name: Run clippy check and deny warnings
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run formatting and Clippy checks
+        run: just lint
+
+  test:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v7
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run tests
+        run: just test
+
+  doc:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v7
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build documentation
+        run: just doc
+
+  dependencies:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v7
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install just, cargo-audit, and cargo-machete
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-audit,cargo-machete
+
+      - name: Check dependencies
+        run: just dependencies
+
+  msrv:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v7
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # The recipe's shebang needs cygpath, which only Git Bash puts on PATH.
+      - name: Check MSRV of the library
+        shell: bash
+        run: just check-msrv win-nightlight-lib
+
+      - name: Check MSRV of the CLI
+        shell: bash
+        run: just check-msrv win-nightlight-cli
+
+  package:
+    runs-on: windows-latest
+    steps:
+      - name: Disable git core.autocrlf
+        run: git config --global core.autocrlf false
+
+      - name: Checkout repository code
+        uses: actions/checkout@v7
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run publish dry run
-        run: cargo publish --workspace --dry-run --locked
+        run: cargo +stable publish --workspace --dry-run --locked

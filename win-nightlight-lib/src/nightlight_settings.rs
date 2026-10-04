@@ -1,15 +1,25 @@
-use std::fmt;
+//! Night Light schedule and color temperature settings.
 
-use crate::bond::*;
+use crate::bond::BondError;
+use crate::bond::BondType;
+use crate::bond::CompactBinaryReader;
+use crate::bond::CompactBinaryWriter;
+use crate::bond::FieldHeader;
 use crate::cloudstore;
-use chrono::{NaiveTime, Timelike, Utc};
+use chrono::NaiveTime;
+use chrono::Timelike;
+use chrono::Utc;
+use std::fmt;
 use thiserror::Error;
 
-/// Scheduling modes
+/// Night Light schedule mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScheduleMode {
+    /// Night Light does not follow a schedule.
     Off,
+    /// Night Light turns on at sunset and off at sunrise.
     SunsetToSunrise,
+    /// Night Light turns on and off at user-defined times.
     SetHours,
 }
 
@@ -23,24 +33,30 @@ impl fmt::Display for ScheduleMode {
     }
 }
 
+/// Invalid Night Light setting value.
 #[derive(Error, Debug)]
 pub enum SettingsError {
+    /// The color temperature in Kelvin is outside 1200 to 6500.
     #[error("Invalid color temperature {0}")]
     InvalidColorTemperature(u16),
+    /// Start or end times were given for a mode other than
+    /// [`ScheduleMode::SetHours`].
     #[error("Start/end times are only valid with manual schedule mode")]
     InvalidScheduleTimeOverride,
 }
 
-/// Night Light settings stored in the registry as a Bond CompactBinary v1 payload.
+/// Night Light settings stored in the registry as a Bond `CompactBinary` v1
+/// payload.
 ///
-/// The binary format is a CloudStore wrapper containing an inner Bond struct with fields:
-/// - Field 0:  bool   — schedule_enabled
-/// - Field 10: bool   — set_hours_mode (presence = set hours mode)
-/// - Field 20: struct — schedule start time (TimeBlock)
-/// - Field 30: struct — schedule end time (TimeBlock)
+/// The binary format is a `CloudStore` wrapper containing an inner Bond struct
+/// with fields:
+/// - Field 0:  bool   — `schedule_enabled`
+/// - Field 10: bool   — `set_hours_mode` (presence = set hours mode)
+/// - Field 20: struct — schedule start time (`TimeBlock`)
+/// - Field 30: struct — schedule end time (`TimeBlock`)
 /// - Field 40: int16  — color temperature (Kelvin)
-/// - Field 50: struct — sunset time (TimeBlock)
-/// - Field 60: struct — sunrise time (TimeBlock)
+/// - Field 50: struct — sunset time (`TimeBlock`)
+/// - Field 60: struct — sunrise time (`TimeBlock`)
 ///
 /// See `docs/nightlight-registry-format.md` for full details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,9 +67,11 @@ pub struct NightlightSettings {
     pub schedule_mode: ScheduleMode,
     /// The color temperature in Kelvin
     pub color_temperature: u16,
-    /// The start time of the schedule when [schedule_mode] is [ScheduleMode::SetHours]
+    /// The start time of the schedule when [`Self::schedule_mode`] is
+    /// [`ScheduleMode::SetHours`]
     pub start_time: NaiveTime,
-    /// The end time of the schedule when [schedule_mode] is [ScheduleMode::SetHours]
+    /// The end time of the schedule when [`Self::schedule_mode`] is
+    /// [`ScheduleMode::SetHours`]
     pub end_time: NaiveTime,
     /// The sunset time
     pub sunset_time: NaiveTime,
@@ -61,26 +79,26 @@ pub struct NightlightSettings {
     pub sunrise_time: NaiveTime,
 }
 
-/// Reads a TimeBlock struct: { field 0: int8 = hour, field 1: int8 = minute }.
-/// Returns (hour, minute) with defaults of 0 for absent fields.
-fn read_time_block(reader: &mut CompactBinaryReader) -> Result<(u8, u8), BondError> {
+/// Reads a `TimeBlock` struct with field 0 `int8` hour and field 1 `int8`
+/// minute. Returns (hour, minute) with defaults of 0 for absent fields.
+fn read_time_block(reader: &mut CompactBinaryReader<'_>) -> Result<(u8, u8), BondError> {
     let mut hour: u8 = 0;
     let mut minute: u8 = 0;
     loop {
         match reader.read_field_header()? {
             FieldHeader::Stop => break,
-            FieldHeader::StopBase => continue,
+            FieldHeader::StopBase => {}
             FieldHeader::Field {
                 id: 0,
                 bond_type: BondType::Int8,
             } => {
-                hour = reader.read_int8()? as u8;
+                hour = u8::try_from(reader.read_int8()?)?;
             }
             FieldHeader::Field {
                 id: 1,
                 bond_type: BondType::Int8,
             } => {
-                minute = reader.read_int8()? as u8;
+                minute = u8::try_from(reader.read_int8()?)?;
             }
             FieldHeader::Field { bond_type, .. } => {
                 reader.skip_value(bond_type)?;
@@ -90,22 +108,36 @@ fn read_time_block(reader: &mut CompactBinaryReader) -> Result<(u8, u8), BondErr
     Ok((hour, minute))
 }
 
-/// Writes a TimeBlock struct. Omits fields with value 0 (Bond default omission).
-fn write_time_block(writer: &mut CompactBinaryWriter, field_id: u16, hour: u8, minute: u8) {
+/// Writes a `TimeBlock` struct. Omits fields with value 0 (Bond default
+/// omission).
+fn write_time_block(
+    writer: &mut CompactBinaryWriter,
+    field_id: u16,
+    time: NaiveTime,
+) -> Result<(), BondError> {
+    let hour = i8::try_from(time.hour())?;
+    let minute = i8::try_from(time.minute())?;
     writer.write_field_header(field_id, BondType::Struct);
     if hour > 0 {
         writer.write_field_header(0, BondType::Int8);
-        writer.write_int8(hour as i8);
+        writer.write_int8(hour);
     }
     if minute > 0 {
         writer.write_field_header(1, BondType::Int8);
-        writer.write_int8(minute as i8);
+        writer.write_int8(minute);
     }
     writer.write_stop();
+    Ok(())
 }
 
 impl NightlightSettings {
-    /// Deserializes a [NightlightSettings] struct from a byte slice.
+    /// Deserializes a [`NightlightSettings`] struct from a byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BondError`] if `data` is not a valid `CloudStore` Night
+    /// Light settings payload, or if it stores an out-of-range color
+    /// temperature or time.
     pub fn deserialize_from_bytes(data: &[u8]) -> Result<NightlightSettings, BondError> {
         let (timestamp, inner_payload) = cloudstore::cloudstore_unwrap(data)?;
 
@@ -123,7 +155,7 @@ impl NightlightSettings {
         loop {
             match reader.read_field_header()? {
                 FieldHeader::Stop => break,
-                FieldHeader::StopBase => continue,
+                FieldHeader::StopBase => {}
                 FieldHeader::Field {
                     id: 0,
                     bond_type: BondType::Bool,
@@ -191,7 +223,7 @@ impl NightlightSettings {
         Ok(NightlightSettings {
             timestamp,
             schedule_mode,
-            color_temperature: color_temperature as u16,
+            color_temperature: u16::try_from(color_temperature)?,
             start_time: to_time(start_time.0, start_time.1)?,
             end_time: to_time(end_time.0, end_time.1)?,
             sunset_time: to_time(sunset_time.0, sunset_time.1)?,
@@ -199,8 +231,14 @@ impl NightlightSettings {
         })
     }
 
-    /// Serializes a [NightlightSettings] struct into a byte slice.
-    pub fn serialize_to_bytes(&self) -> Vec<u8> {
+    /// Serializes a [`NightlightSettings`] struct into a byte vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BondError::IntegerOutOfRange`] if the color temperature
+    /// exceeds the Bond `int16` range or the encoded payload exceeds the Bond
+    /// `list` length range.
+    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, BondError> {
         // Build inner payload
         let mut inner = CompactBinaryWriter::new();
         inner.write_marshaled_header();
@@ -218,40 +256,20 @@ impl NightlightSettings {
         }
 
         // Field 20: schedule start time
-        write_time_block(
-            &mut inner,
-            20,
-            self.start_time.hour() as u8,
-            self.start_time.minute() as u8,
-        );
+        write_time_block(&mut inner, 20, self.start_time)?;
 
         // Field 30: schedule end time
-        write_time_block(
-            &mut inner,
-            30,
-            self.end_time.hour() as u8,
-            self.end_time.minute() as u8,
-        );
+        write_time_block(&mut inner, 30, self.end_time)?;
 
         // Field 40: color temperature
         inner.write_field_header(40, BondType::Int16);
-        inner.write_int16(self.color_temperature as i16);
+        inner.write_int16(i16::try_from(self.color_temperature)?);
 
         // Field 50: sunset time
-        write_time_block(
-            &mut inner,
-            50,
-            self.sunset_time.hour() as u8,
-            self.sunset_time.minute() as u8,
-        );
+        write_time_block(&mut inner, 50, self.sunset_time)?;
 
         // Field 60: sunrise time
-        write_time_block(
-            &mut inner,
-            60,
-            self.sunrise_time.hour() as u8,
-            self.sunrise_time.minute() as u8,
-        );
+        write_time_block(&mut inner, 60, self.sunrise_time)?;
 
         inner.write_stop();
 
@@ -259,10 +277,12 @@ impl NightlightSettings {
     }
 
     fn update_timestamp(&mut self) {
-        self.timestamp = Utc::now().timestamp() as u64;
+        self.timestamp = u64::try_from(Utc::now().timestamp()).unwrap_or_default();
     }
 
     /// Sets the schedule mode for the night light.
+    ///
+    /// Returns `true` if the mode changed.
     pub fn set_mode(&mut self, mode: ScheduleMode) -> bool {
         if self.schedule_mode == mode {
             return false;
@@ -273,7 +293,15 @@ impl NightlightSettings {
         true
     }
 
-    /// Sets the color temperature for the night light, in a range between 1200 to 6500 Kelvin.
+    /// Sets the color temperature for the night light, in a range between 1200
+    /// to 6500 Kelvin.
+    ///
+    /// Returns `Ok(true)` if the temperature changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettingsError::InvalidColorTemperature`] if
+    /// `color_temperature` is outside 1200 to 6500.
     pub fn set_color_temperature(&mut self, color_temperature: u16) -> Result<bool, SettingsError> {
         if self.color_temperature == color_temperature {
             return Ok(false);
@@ -288,6 +316,8 @@ impl NightlightSettings {
     }
 
     /// Sets the start time for the night light's set-hours schedule.
+    ///
+    /// Returns `true` if the time changed.
     pub fn set_start_time(&mut self, start_time: NaiveTime) -> bool {
         if self.start_time == start_time {
             return false;
@@ -299,6 +329,8 @@ impl NightlightSettings {
     }
 
     /// Sets the end time for the night light's set-hours schedule.
+    ///
+    /// Returns `true` if the time changed.
     pub fn set_end_time(&mut self, end_time: NaiveTime) -> bool {
         if self.end_time == end_time {
             return false;
@@ -310,6 +342,8 @@ impl NightlightSettings {
     }
 
     /// Sets the sunset time for the night light's sunset-to-sunrise schedule.
+    ///
+    /// Returns `true` if the time changed.
     pub fn set_sunset_time(&mut self, sunset_time: NaiveTime) -> bool {
         if self.sunset_time == sunset_time {
             return false;
@@ -321,6 +355,8 @@ impl NightlightSettings {
     }
 
     /// Sets the sunrise time for the night light's sunset-to-sunrise schedule.
+    ///
+    /// Returns `true` if the time changed.
     pub fn set_sunrise_time(&mut self, sunrise_time: NaiveTime) -> bool {
         if self.sunrise_time == sunrise_time {
             return false;
@@ -346,78 +382,82 @@ mod tests {
     #[test]
     fn test_serialize_to_bytes() {
         let settings = NightlightSettings {
-            timestamp: 1742540908,
+            timestamp: 1_742_540_908,
             schedule_mode: ScheduleMode::SetHours,
             color_temperature: 2790,
-            start_time: NaiveTime::from_hms_opt(1, 15, 00).unwrap(),
-            end_time: NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
-            sunset_time: NaiveTime::from_hms_opt(19, 23, 0).unwrap(),
-            sunrise_time: NaiveTime::from_hms_opt(7, 12, 0).unwrap(),
+            start_time: NaiveTime::from_hms_opt(1, 15, 00).expect("time is valid"),
+            end_time: NaiveTime::from_hms_opt(0, 0, 0).expect("time is valid"),
+            sunset_time: NaiveTime::from_hms_opt(19, 23, 0).expect("time is valid"),
+            sunrise_time: NaiveTime::from_hms_opt(7, 12, 0).expect("time is valid"),
         };
-        let bytes = settings.serialize_to_bytes();
+        let bytes = settings.serialize_to_bytes().expect("settings serialize");
         assert_eq!(BYTES, bytes.as_slice());
     }
 
     #[test]
     fn test_deserialize_from_bytes() {
         let expected_settings = NightlightSettings {
-            timestamp: 1742540908,
+            timestamp: 1_742_540_908,
             schedule_mode: ScheduleMode::SetHours,
             color_temperature: 2790,
-            start_time: NaiveTime::from_hms_opt(1, 15, 00).unwrap(),
-            end_time: NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
-            sunset_time: NaiveTime::from_hms_opt(19, 23, 0).unwrap(),
-            sunrise_time: NaiveTime::from_hms_opt(7, 12, 0).unwrap(),
+            start_time: NaiveTime::from_hms_opt(1, 15, 00).expect("time is valid"),
+            end_time: NaiveTime::from_hms_opt(0, 0, 0).expect("time is valid"),
+            sunset_time: NaiveTime::from_hms_opt(19, 23, 0).expect("time is valid"),
+            sunrise_time: NaiveTime::from_hms_opt(7, 12, 0).expect("time is valid"),
         };
-        let settings = NightlightSettings::deserialize_from_bytes(&BYTES).unwrap();
+        let settings =
+            NightlightSettings::deserialize_from_bytes(&BYTES).expect("fixture deserializes");
         assert_eq!(expected_settings, settings);
     }
 
     #[test]
     fn test_serde_roundtrip() {
         let settings = NightlightSettings {
-            timestamp: 1742541024,
+            timestamp: 1_742_541_024,
             schedule_mode: ScheduleMode::SetHours,
             color_temperature: 6500,
-            start_time: NaiveTime::from_hms_opt(0, 15, 00).unwrap(),
-            end_time: NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
-            sunset_time: NaiveTime::from_hms_opt(18, 26, 0).unwrap(),
-            sunrise_time: NaiveTime::from_hms_opt(7, 0, 0).unwrap(),
+            start_time: NaiveTime::from_hms_opt(0, 15, 00).expect("time is valid"),
+            end_time: NaiveTime::from_hms_opt(0, 0, 0).expect("time is valid"),
+            sunset_time: NaiveTime::from_hms_opt(18, 26, 0).expect("time is valid"),
+            sunrise_time: NaiveTime::from_hms_opt(7, 0, 0).expect("time is valid"),
         };
-        let bytes = settings.serialize_to_bytes();
-        let settings_from_bytes = NightlightSettings::deserialize_from_bytes(&bytes).unwrap();
+        let bytes = settings.serialize_to_bytes().expect("settings serialize");
+        let settings_from_bytes =
+            NightlightSettings::deserialize_from_bytes(&bytes).expect("settings deserialize");
         assert_eq!(settings, settings_from_bytes);
     }
 
     #[test]
     fn test_serde_roundtrip_schedule_off() {
         let settings = NightlightSettings {
-            timestamp: 1742541024,
+            timestamp: 1_742_541_024,
             schedule_mode: ScheduleMode::Off,
             color_temperature: 3400,
-            start_time: NaiveTime::from_hms_opt(22, 0, 0).unwrap(),
-            end_time: NaiveTime::from_hms_opt(7, 0, 0).unwrap(),
-            sunset_time: NaiveTime::from_hms_opt(18, 0, 0).unwrap(),
-            sunrise_time: NaiveTime::from_hms_opt(6, 30, 0).unwrap(),
+            start_time: NaiveTime::from_hms_opt(22, 0, 0).expect("time is valid"),
+            end_time: NaiveTime::from_hms_opt(7, 0, 0).expect("time is valid"),
+            sunset_time: NaiveTime::from_hms_opt(18, 0, 0).expect("time is valid"),
+            sunrise_time: NaiveTime::from_hms_opt(6, 30, 0).expect("time is valid"),
         };
-        let bytes = settings.serialize_to_bytes();
-        let roundtripped = NightlightSettings::deserialize_from_bytes(&bytes).unwrap();
+        let bytes = settings.serialize_to_bytes().expect("settings serialize");
+        let roundtripped =
+            NightlightSettings::deserialize_from_bytes(&bytes).expect("settings deserialize");
         assert_eq!(settings, roundtripped);
     }
 
     #[test]
     fn test_serde_roundtrip_sunset_to_sunrise() {
         let settings = NightlightSettings {
-            timestamp: 1742541024,
+            timestamp: 1_742_541_024,
             schedule_mode: ScheduleMode::SunsetToSunrise,
             color_temperature: 1200,
-            start_time: NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
-            end_time: NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
-            sunset_time: NaiveTime::from_hms_opt(20, 45, 0).unwrap(),
-            sunrise_time: NaiveTime::from_hms_opt(5, 15, 0).unwrap(),
+            start_time: NaiveTime::from_hms_opt(0, 0, 0).expect("time is valid"),
+            end_time: NaiveTime::from_hms_opt(0, 0, 0).expect("time is valid"),
+            sunset_time: NaiveTime::from_hms_opt(20, 45, 0).expect("time is valid"),
+            sunrise_time: NaiveTime::from_hms_opt(5, 15, 0).expect("time is valid"),
         };
-        let bytes = settings.serialize_to_bytes();
-        let roundtripped = NightlightSettings::deserialize_from_bytes(&bytes).unwrap();
+        let bytes = settings.serialize_to_bytes().expect("settings serialize");
+        let roundtripped =
+            NightlightSettings::deserialize_from_bytes(&bytes).expect("settings deserialize");
         assert_eq!(settings, roundtripped);
     }
 }

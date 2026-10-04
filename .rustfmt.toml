@@ -1,0 +1,11 @@
+edition = "2024"
+style_edition = "2024"
+unstable_features = true
+reorder_imports = true
+group_imports = "One"
+imports_granularity = "Item"
+newline_style = "Unix"
+normalize_comments = true
+normalize_doc_attributes = true
+wrap_comments = true
+float_literal_trailing_zero = "Always"

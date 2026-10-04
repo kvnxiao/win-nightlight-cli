@@ -4,8 +4,8 @@ description = "Command-line tool to toggle and configure Windows 11 Night Light"
 categories = ["command-line-utilities"]
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
-license-file = "../LICENSE"
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
@@ -20,3 +20,6 @@ chrono = "0.4.40"
 clap = { version = "4.5.32", features = ["derive"] }
 indoc = "2.0.6"
 win-nightlight-lib.workspace = true
+
+[lints]
+workspace = true

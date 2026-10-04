@@ -1,13 +1,15 @@
-/// Bond CompactBinary protocol magic bytes (COMPACT_PROTOCOL = 0x4243, stored as uint16 LE).
-pub const COMPACT_BINARY_MAGIC: [u8; 2] = [0x43, 0x42];
+/// Bond `CompactBinary` protocol magic bytes (`COMPACT_PROTOCOL` = 0x4243,
+/// stored as uint16 LE).
+pub(super) const COMPACT_BINARY_MAGIC: [u8; 2] = [0x43, 0x42];
 
-/// CompactBinary version 1 (uint16 LE).
-pub const COMPACT_BINARY_V1: [u8; 2] = [0x01, 0x00];
+/// `CompactBinary` version 1 (uint16 LE).
+pub(super) const COMPACT_BINARY_V1: [u8; 2] = [0x01, 0x00];
 
-/// Bond data type identifiers (5-bit, used in field headers and container headers).
+/// Bond data type identifiers (5-bit, used in field headers and container
+/// headers).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BondType {
+pub(crate) enum BondType {
     Bool = 2,
     UInt8 = 3,
     UInt16 = 4,
