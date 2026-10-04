@@ -18,7 +18,12 @@ path = "src/main.rs"
 anyhow = "1.0.97"
 clap = { version = "4.5.32", features = ["derive"] }
 clap_complete = "4.6.11"
-jiff = "0.2.37"
+jiff = { version = "0.2.37", default-features = false, features = [
+    "std",
+    "tz-system",
+    "tz-fat",
+    "tzdb-bundle-platform",
+] }
 win-nightlight-lib.workspace = true
 
 [lints]
