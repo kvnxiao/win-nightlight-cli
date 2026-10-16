@@ -52,7 +52,7 @@ Options:
 ```
 
 `on`, `off`, and `toggle` change only whether Night Light is on now; they do not change the
-schedule. `temp` changes only the color temperature and does not turn Night Light on. These
+schedule. `temp` sets the color temperature and preserves the schedule and on/off state. These
 commands print nothing on success.
 
 ```shell
@@ -123,9 +123,27 @@ The library reads and writes the two registry values that store Night Light:
   Windows computes.
 - `State`: whether Night Light is on now, what caused the last change, and when it happened.
 
-`Nightlight` is the entry point. It reads and writes each value on its own, so turning Night Light
-on or off never changes the schedule, and changing a setting never turns Night Light on or off.
-Each write stamps the CloudStore timestamp so Windows accepts it.
+`Nightlight` is the entry point. Its temperature operation can read settings and state but writes
+only settings. On/off operations write only state and preserve the schedule. Each write advances
+the CloudStore timestamp using the supplied record's previous timestamp and the current time.
+
+`Nightlight::set_color_temperature` is the temperature operation used by `wnl temp`. It uses the
+temporary color-temperature preview that Windows Settings applies during slider interactions:
+
+- If preview is already active, it preserves preview and stores a changed temperature.
+- Otherwise, if Night Light is active, it writes the temperature with preview enabled, then rereads
+  settings and clears preview. It repeats this sequence even when the temperature is unchanged.
+- If Night Light is inactive, it stores a changed temperature without starting preview.
+
+The writes run without a sleep; each advances the stored timestamp by at least two seconds.
+Schedule settings and on/off state are preserved.
+
+Avoid overlapping temperature calls or using the native slider during a call. Cleanup rereads
+settings to preserve intervening changes, but registry updates are not atomic with other writers.
+If three cleanup attempts fail, `ErrorKind::PreviewCleanup` reports that the temperature was
+written and preview may remain active. Successful registry writes do not confirm a display update.
+
+`update_settings` and `write_settings` write at most once without adding this preview sequence.
 
 ```rust
 use win_nightlight_lib::ColorTemperature;
@@ -136,10 +154,8 @@ let nightlight = Nightlight::new();
 nightlight.set_active(true)?;
 
 let temperature: ColorTemperature = "3400K".parse()?;
-nightlight.update_settings(|settings| {
-    settings.set_color_temperature(temperature);
-    settings.set_schedule(Schedule::SunsetToSunrise);
-})?;
+nightlight.set_color_temperature(temperature)?;
+nightlight.update_settings(|settings| settings.set_schedule(Schedule::SunsetToSunrise))?;
 ```
 
 | Type                           | Purpose                                                                 |
@@ -152,7 +168,7 @@ nightlight.update_settings(|settings| {
 | `Schedule`                     | Schedule change passed to `Settings::set_schedule`.                     |
 | `ScheduleMode`, `ScheduleKind` | Effective schedule mode, and the type kept while the schedule is off.   |
 | `TransitionCause`              | Whether the last on/off change was manual or scheduled.                 |
-| `Error`, `ErrorKind`, `Result` | Errors classified as not found, registry, decode, encode, or input.     |
+| `Error`, `ErrorKind`, `Result` | Errors classified as not found, registry, decode, encode, input, or preview cleanup.     |
 
 Both values are stored as `REG_BINARY` values named `Data` under:
 

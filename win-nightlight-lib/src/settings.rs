@@ -278,6 +278,10 @@ impl Settings {
         self.color_temperature = Some(temperature.kelvin().cast_signed());
     }
 
+    pub(crate) fn set_previewing(&mut self, previewing: bool) {
+        self.previewing = previewing;
+    }
+
     pub(crate) fn stamp(&mut self, now: SystemTime) {
         self.envelope.stamp(now);
     }

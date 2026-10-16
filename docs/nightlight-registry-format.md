@@ -78,6 +78,10 @@ the later of the current Unix time and the previous timestamp plus two seconds:
 modified = max(now_unix_seconds, previous_modified + 2)
 ```
 
+Rapid writes can advance this whole-second timestamp ahead of the clock. Its differences do not
+measure elapsed time. Reread the value before each subsequent write and compute the next timestamp
+from that snapshot. The read and write are not atomic with other writers.
+
 ## Inner Settings Schema
 
 | Field ID | Bond Type   | Default | Description                                                                                    |
@@ -89,7 +93,7 @@ modified = max(now_unix_seconds, previous_modified + 2)
 | 40       | `BT_INT16`  | 6500    | `colorTemperature`: color temperature in kelvin; the Settings app uses 1200 to 6500.           |
 | 50       | `BT_STRUCT` | 00:00   | TimeBlock: sunset time Windows computes from the device location.                              |
 | 60       | `BT_STRUCT` | 00:00   | TimeBlock: sunrise time Windows computes from the device location.                             |
-| 70       | `BT_BOOL`   | `false` | `previewing`: `true` while the user drags the color temperature slider. Omitted when `false`.  |
+| 70       | `BT_BOOL`   | `false` | `previewing`: `true` while Windows previews the selected temperature. Omitted when `false`.  |
 
 Windows writes all four TimeBlocks, including a block for 00:00 (`CA 1E 00`). The sunset and
 sunrise blocks stay at 00:00 until Windows computes them.
@@ -148,8 +152,8 @@ the number of 100-nanosecond intervals since January 1, 1601 (UTC).
 unix_seconds = (filetime / 10_000_000) - 11_644_473_600
 ```
 
-This field records when Night Light last turned on or off. The envelope timestamp records when the
-registry value was last written; the two can differ.
+This field records when Night Light last turned on or off. The envelope timestamp advances on each
+write and can be ahead of the clock; it does not give the precise time of a change.
 
 ## Writer rules
 
@@ -160,8 +164,17 @@ A writer that changes one value does not modify the other value:
 - Changing the schedule or the color temperature writes only the settings value and stamps the
   envelope timestamp.
 
+`Nightlight::set_color_temperature` writes only settings:
+
+- If preview is already active, it stores a changed temperature and preserves field 70.
+- Otherwise, if Night Light is active, it writes the temperature with field 70 true, then rereads
+  settings and clears field 70. It does not sleep between writes.
+- If Night Light is inactive, it stores a changed temperature without starting preview.
+
+Direct settings writes do not add this sequence.
+
 A writer also preserves fields it does not model, at the inner struct and at every envelope level,
-and writes them back in ascending field-ID order. This library does not preserve unknown fields
+and writes them back in ascending field-ID order. `win-nightlight-lib` does not preserve unknown fields
 inside a TimeBlock.
 
 ## Annotated Byte Walkthrough

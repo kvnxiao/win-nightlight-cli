@@ -32,6 +32,7 @@ impl Error {
             }
             Repr::Decode { .. } => ErrorKind::Decode,
             Repr::Encode { .. } => ErrorKind::Encode,
+            Repr::PreviewCleanup { .. } => ErrorKind::PreviewCleanup,
             Repr::ColorTemperatureRange(_)
             | Repr::ColorTemperatureSyntax(_)
             | Repr::TimeOfDayRange { .. }
@@ -62,10 +63,16 @@ pub enum ErrorKind {
     Encode,
     /// A caller-supplied value is out of range or malformed.
     InvalidInput,
+    /// A temperature write succeeded, but clearing preview failed.
+    PreviewCleanup,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Repr {
+    #[error(
+        "clearing Night Light preview after writing the temperature; preview may remain active"
+    )]
+    PreviewCleanup { source: Box<Error> },
     #[error("reading {key} from the registry")]
     Read {
         key: Key,

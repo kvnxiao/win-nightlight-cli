@@ -79,8 +79,9 @@ pub(crate) mod memory {
     struct Inner {
         values: HashMap<Key, Vec<u8>>,
         queued_reads: HashMap<Key, VecDeque<Result<Vec<u8>, WIN32_ERROR>>>,
+        queued_writes: HashMap<Key, VecDeque<Result<(), WIN32_ERROR>>>,
         reads: Vec<Key>,
-        writes: Vec<Key>,
+        writes: Vec<(Key, Vec<u8>)>,
     }
 
     impl MemoryStore {
@@ -110,7 +111,19 @@ pub(crate) mod memory {
         }
 
         pub(crate) fn writes(&self) -> Vec<Key> {
+            self.lock().writes.iter().map(|(key, _)| *key).collect()
+        }
+
+        pub(crate) fn write_attempts(&self) -> Vec<(Key, Vec<u8>)> {
             self.lock().writes.clone()
+        }
+
+        pub(crate) fn queue_writes(&self, key: Key, results: Vec<Result<(), WIN32_ERROR>>) {
+            self.lock()
+                .queued_writes
+                .entry(key)
+                .or_default()
+                .extend(results);
         }
 
         fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -138,8 +151,15 @@ pub(crate) mod memory {
 
         fn write(&self, key: Key, data: &[u8]) -> windows_result::Result<()> {
             let mut inner = self.lock();
+            inner.writes.push((key, data.to_vec()));
+            if let Some(result) = inner
+                .queued_writes
+                .get_mut(&key)
+                .and_then(VecDeque::pop_front)
+            {
+                result?;
+            }
             inner.values.insert(key, data.to_vec());
-            inner.writes.push(key);
             Ok(())
         }
     }
