@@ -6,9 +6,8 @@
 //! - [`State`]: whether Night Light is on now, and when and why it last turned
 //!   on or off.
 //!
-//! [`Nightlight`] reads and writes each value on its own, so turning Night
-//! Light on or off does not change the schedule, and changing a setting does
-//! not turn Night Light on or off.
+//! [`Nightlight`] writes settings and state separately. Temperature updates
+//! read both values and write only settings; on/off updates write only state.
 //!
 //! Both values are Bond `CompactBinary` v1 payloads inside a `CloudStore`
 //! envelope. Microsoft does not document this format; this crate follows
@@ -30,7 +29,7 @@
 //! # Ok::<(), win_nightlight_lib::Error>(())
 //! ```
 //!
-//! Set the color temperature and a set-hours schedule in one write:
+//! Set the color temperature and a set-hours schedule:
 //!
 //! ```no_run
 //! use win_nightlight_lib::ColorTemperature;
@@ -42,8 +41,9 @@
 //! let start: TimeOfDay = "21:00".parse()?;
 //! let end: TimeOfDay = "07:00".parse()?;
 //!
-//! Nightlight::new().update_settings(|settings| {
-//!     settings.set_color_temperature(temperature);
+//! let nightlight = Nightlight::new();
+//! nightlight.set_color_temperature(temperature)?;
+//! nightlight.update_settings(|settings| {
 //!     settings.set_schedule(Schedule::SetHours {
 //!         start: Some(start),
 //!         end: Some(end),
@@ -84,4 +84,6 @@ pub use crate::settings::ScheduleMode;
 pub use crate::settings::Settings;
 pub use crate::state::State;
 pub use crate::state::TransitionCause;
+pub use crate::store::SETTINGS_KEY_PATH;
+pub use crate::store::STATE_KEY_PATH;
 pub use crate::time::TimeOfDay;

@@ -1,0 +1,112 @@
+[package]
+name = "win-nightlight-watch"
+description = "Wait for Windows registry changes alongside win-nightlight-lib"
+categories = ["os::windows-apis"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = []
+
+[dependencies]
+thiserror.workspace = true
+windows-registry.workspace = true
+windows-result.workspace = true
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+test-case.workspace = true
+win-nightlight-lib.workspace = true
+
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+unnameable_types = "warn"
+elided_lifetimes_in_paths = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -2 }
+pedantic = { level = "warn", priority = -2 }
+cargo = { level = "warn", priority = -2 }
+correctness = { level = "deny", priority = -1 }
+
+multiple_crate_versions = "allow"
+cast_precision_loss = "allow"
+must_use_candidate = "allow"
+
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+string_slice = "deny"
+indexing_slicing = "deny"
+get_unwrap = "deny"
+unwrap_in_result = "deny"
+panic_in_result_fn = "deny"
+unchecked_time_subtraction = "deny"
+todo = "warn"
+unimplemented = "warn"
+
+let_underscore_future = "deny"
+let_underscore_must_use = "deny"
+unused_result_ok = "deny"
+map_err_ignore = "deny"
+
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+if_let_mutex = "deny"
+large_futures = "deny"
+
+mem_forget = "deny"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+unnecessary_safety_doc = "deny"
+unnecessary_safety_comment = "deny"
+
+float_cmp = "deny"
+lossy_float_literal = "deny"
+invalid_upcast_comparisons = "deny"
+
+rc_mutex = "deny"
+debug_assert_with_mut_call = "deny"
+iter_not_returning_iterator = "deny"
+expl_impl_clone_on_copy = "deny"
+infallible_try_from = "deny"
+dbg_macro = "deny"
+
+print_stdout = "deny"
+print_stderr = "deny"
+exit = "deny"
+
+cast_lossless = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+
+inefficient_to_string = "deny"
+large_enum_variant = "warn"
+large_stack_arrays = "deny"
+needless_pass_by_value = "warn"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+missing_crate_level_docs = "warn"

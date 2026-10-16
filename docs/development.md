@@ -5,6 +5,11 @@ rustfmt. `rust-toolchain.toml` selects stable for unqualified `cargo` commands. 
 `Cargo.toml` defines the shared lint baseline, `clippy.toml` configures Clippy, and `.rustfmt.toml`
 configures rustfmt.
 
+`win-nightlight-lib` and the CLI forbid unsafe code. `win-nightlight-watch` copies the workspace
+lint baseline with `unsafe_code = "deny"` so individual Win32 wrapper functions can use scoped
+exceptions. Keep its lint tables synchronized with the workspace; each unsafe block needs a
+`SAFETY` comment describing handle validity and ownership.
+
 ## Setup
 
 Install the toolchains and tools:
@@ -48,7 +53,7 @@ The `justfile` defines the tasks that local development and CI share:
 | `just check-msrv PACKAGE`  | Checks `PACKAGE` with the toolchain named by its `rust-version`.  |
 
 Run `just check` before opening a pull request. CI runs each task as a separate job, plus
-`just check-msrv` for both crates and a `cargo publish --dry-run`.
+`just check-msrv` for all three crates and `cargo publish --workspace --dry-run --locked`.
 
 ## Tests
 
@@ -60,5 +65,10 @@ Run `just check` before opening a pull request. CI runs each task as a separate 
   `just test`) and commit the updated `.snap` files.
 - Property tests use `proptest`. When a property test fails, commit the generated
   `proptest-regressions/` file with the fix so the failing case replays in later runs.
-- Tests never touch the real registry: `Nightlight` tests run against an in-memory store with a
-  fixed clock.
+- `Nightlight` tests run against an in-memory store with a fixed clock.
+- Watcher tests run on Windows and create separate scratch keys under
+  `HKEY_CURRENT_USER\Software\win-nightlight-test`, named by test and process ID. Drop guards
+  remove each test key. The tests exercise native notifications, external waits, thread exit,
+  deletion, and handle cleanup without changing Night Light.
+- The watcher rustdoc example uses Night Light paths but is marked `no_run`: tests compile it
+  without accessing those keys.

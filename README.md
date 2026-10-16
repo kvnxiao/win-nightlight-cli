@@ -1,7 +1,10 @@
-# `wnl` CLI / `win-nightlight-lib`
+# Windows Night Light libraries and CLI
 
-A Rust library and CLI that turn Windows 11 Night Light on and off and configure its schedule and
-color temperature.
+Rust libraries and a CLI for Windows 11 Night Light:
+
+- `win-nightlight-lib` reads and writes Night Light state, schedules, and color temperature.
+- `win-nightlight-watch` waits for registry changes so applications can reread Night Light data.
+- `win-nightlight-cli` installs the `wnl` command.
 
 **NOTE: Tested on Windows 11 24H2 (OS build 26100) and build 26300.** Older Windows versions may
 store Night Light differently.
@@ -18,6 +21,12 @@ Add the library to a project:
 
 ```shell
 cargo add win-nightlight-lib
+```
+
+Add change notifications when needed:
+
+```shell
+cargo add win-nightlight-watch
 ```
 
 ## `wnl` CLI usage
@@ -43,7 +52,7 @@ Options:
 ```
 
 `on`, `off`, and `toggle` change only whether Night Light is on now; they do not change the
-schedule. `temp` changes only the color temperature and does not turn Night Light on. These
+schedule. `temp` sets the color temperature and preserves the schedule and on/off state. These
 commands print nothing on success.
 
 ```shell
@@ -114,9 +123,27 @@ The library reads and writes the two registry values that store Night Light:
   Windows computes.
 - `State`: whether Night Light is on now, what caused the last change, and when it happened.
 
-`Nightlight` is the entry point. It reads and writes each value on its own, so turning Night Light
-on or off never changes the schedule, and changing a setting never turns Night Light on or off.
-Each write stamps the CloudStore timestamp so Windows accepts it.
+`Nightlight` is the entry point. Its temperature operation can read settings and state but writes
+only settings. On/off operations write only state and preserve the schedule. Each write advances
+the CloudStore timestamp using the supplied record's previous timestamp and the current time.
+
+`Nightlight::set_color_temperature` is the temperature operation used by `wnl temp`. It uses the
+temporary color-temperature preview that Windows Settings applies during slider interactions:
+
+- If preview is already active, it preserves preview and stores a changed temperature.
+- Otherwise, if Night Light is active, it writes the temperature with preview enabled, then rereads
+  settings and clears preview. It repeats this sequence even when the temperature is unchanged.
+- If Night Light is inactive, it stores a changed temperature without starting preview.
+
+The writes run without a sleep; each advances the stored timestamp by at least two seconds.
+Schedule settings and on/off state are preserved.
+
+Avoid overlapping temperature calls or using the native slider during a call. Cleanup rereads
+settings to preserve intervening changes, but registry updates are not atomic with other writers.
+If three cleanup attempts fail, `ErrorKind::PreviewCleanup` reports that the temperature was
+written and preview may remain active. Successful registry writes do not confirm a display update.
+
+`update_settings` and `write_settings` write at most once without adding this preview sequence.
 
 ```rust
 use win_nightlight_lib::ColorTemperature;
@@ -127,10 +154,8 @@ let nightlight = Nightlight::new();
 nightlight.set_active(true)?;
 
 let temperature: ColorTemperature = "3400K".parse()?;
-nightlight.update_settings(|settings| {
-    settings.set_color_temperature(temperature);
-    settings.set_schedule(Schedule::SunsetToSunrise);
-})?;
+nightlight.set_color_temperature(temperature)?;
+nightlight.update_settings(|settings| settings.set_schedule(Schedule::SunsetToSunrise))?;
 ```
 
 | Type                           | Purpose                                                                 |
@@ -143,7 +168,7 @@ nightlight.update_settings(|settings| {
 | `Schedule`                     | Schedule change passed to `Settings::set_schedule`.                     |
 | `ScheduleMode`, `ScheduleKind` | Effective schedule mode, and the type kept while the schedule is off.   |
 | `TransitionCause`              | Whether the last on/off change was manual or scheduled.                 |
-| `Error`, `ErrorKind`, `Result` | Errors classified as not found, registry, decode, encode, or input.     |
+| `Error`, `ErrorKind`, `Result` | Errors classified as not found, registry, decode, encode, input, or preview cleanup.     |
 
 Both values are stored as `REG_BINARY` values named `Data` under:
 
@@ -153,3 +178,21 @@ Both values are stored as `REG_BINARY` values named `Data` under:
 The format is Microsoft Bond CompactBinary v1 inside a CloudStore envelope. Microsoft does not
 document it; the library follows reverse-engineered schemas and writes back unchanged the fields it
 does not model, except fields inside a time of day. See [`docs`](docs/) for the format details.
+
+## `win-nightlight-watch`
+
+`Watcher` observes value changes in one existing registry key under `HKEY_CURRENT_USER`.
+Use `SETTINGS_KEY_PATH` and `STATE_KEY_PATH` from `win-nightlight-lib` to watch Night Light.
+The watcher opens the key for notifications and creates an event; it does not start a thread.
+
+Create each watcher before reading the initial data. After a successful wait, call `rearm()`
+once before rereading through `Nightlight`. Do not rearm after a timeout. Notifications can
+combine multiple writes; they tell the application to read the current data.
+
+Use `wait_timeout(Duration)` for a blocking wait, or `AsHandle` / `AsRawHandle` to integrate
+with a native Windows wait or message loop. Each watcher has one notification consumer.
+Drop it after any rearm error; recovery by reopening the key belongs to the application.
+
+See [change notifications](docs/change-notifications.md) for lifecycle, timeout, and error
+contracts, and the [crate documentation](https://docs.rs/win-nightlight-watch) for a compiled
+usage example.

@@ -126,7 +126,7 @@ fn run(command: Command, out: &mut impl Write) -> Result<()> {
             nightlight.toggle()?;
         }
         Command::Temp { kelvin } => {
-            nightlight.update_settings(|settings| settings.set_color_temperature(kelvin))?;
+            nightlight.set_color_temperature(kelvin)?;
         }
         Command::Schedule { schedule } => {
             nightlight.update_settings(|settings| settings.set_schedule(schedule.into()))?;

@@ -1,3 +1,4 @@
+use crate::ColorTemperature;
 use crate::Result;
 use crate::Settings;
 use crate::State;
@@ -13,8 +14,8 @@ const READ_ATTEMPTS: usize = 3;
 /// Handle to the current user's Night Light settings and state.
 ///
 /// Settings (schedule and color temperature) and state (whether Night Light
-/// is on) are separate registry values; each method reads or writes only
-/// the value it names.
+/// is on) are separate registry values. Temperature updates can read both
+/// values and write only settings; on/off updates write only state.
 pub struct Nightlight {
     store: Box<dyn Store + Send + Sync>,
     clock: fn() -> SystemTime,
@@ -94,6 +95,60 @@ impl Nightlight {
         }
         self.write_settings(&updated)?;
         Ok(true)
+    }
+
+    /// Set the color temperature and request a preview refresh when active.
+    ///
+    /// - Write preview on, then reread settings and clear preview without a
+    ///   sleep. Each write advances the stored timestamp by at least two
+    ///   seconds.
+    /// - Refresh even when the requested temperature is already stored.
+    /// - When inactive, store the temperature without starting preview.
+    /// - Preserve an existing preview and never write the on/off state.
+    /// - Return whether any settings were written. Writes are not atomic with
+    ///   other writers; avoid overlapping calls and native slider interaction.
+    /// - Successful writes do not acknowledge a display update. Windows may
+    ///   combine notifications for the two writes.
+    ///
+    /// # Errors
+    ///
+    /// - Return any error of [`read_settings`](Self::read_settings),
+    ///   [`read_state`](Self::read_state), or
+    ///   [`write_settings`](Self::write_settings).
+    /// - Return [`ErrorKind::PreviewCleanup`] if three attempts to clear a
+    ///   started preview fail. The temperature was written and preview may
+    ///   remain active; the source records the last cleanup error.
+    ///
+    /// [`ErrorKind::PreviewCleanup`]: crate::ErrorKind::PreviewCleanup
+    pub fn set_color_temperature(&self, temperature: ColorTemperature) -> Result<bool> {
+        let mut settings = self.read_settings()?;
+        let changed = settings.color_temperature() != Some(temperature.kelvin().cast_signed());
+        let start_preview = !settings.is_previewing() && self.read_state()?.is_active();
+        if !changed && !start_preview {
+            return Ok(false);
+        }
+        settings.set_color_temperature(temperature);
+        if start_preview {
+            settings.set_previewing(true);
+        }
+        self.write_settings(&settings)?;
+        if !start_preview {
+            return Ok(true);
+        }
+        let mut attempts_left = 3;
+        loop {
+            attempts_left -= 1;
+            match self.update_settings(|settings| settings.set_previewing(false)) {
+                Ok(_) => return Ok(true),
+                Err(source) if attempts_left == 0 => {
+                    return Err(Repr::PreviewCleanup {
+                        source: Box::new(source),
+                    }
+                    .into());
+                }
+                Err(_) => {}
+            }
+        }
     }
 
     /// Read the current state.
@@ -379,6 +434,275 @@ mod tests {
         assert_eq!(
             store.value(Key::State).as_deref(),
             Some(fixtures::STATE_INACTIVE)
+        );
+    }
+
+    #[test_case(fixtures::STATE_ACTIVE; "manual activation")]
+    #[test_case(fixtures::STATE_ACTIVE_SCHEDULED; "scheduled activation")]
+    fn active_temperature_update_writes_preview_then_clears_it(state: &[u8]) {
+        let (nightlight, store) = nightlight(state, clock);
+        assert!(
+            nightlight
+                .set_color_temperature("3400".parse().expect("valid temperature"))
+                .expect("temperature updates")
+        );
+        assert_eq!(store.write_attempts(), vec![
+            (Key::Settings, hex!(
+                "43420100 0A020100 2A 0680A4A7DA06 2A 2B0E29"
+                "43420100 0201 C20A00 CA140E012E0F00 CA1E00 CF289035 CA320E132E1700 CA3C0E072E0C00 C24601 00"
+                "00 00 00"
+            ).to_vec()),
+            (Key::Settings, hex!(
+                "43420100 0A020100 2A 0682A4A7DA06 2A 2B0E26"
+                "43420100 0201 C20A00 CA140E012E0F00 CA1E00 CF289035 CA320E132E1700 CA3C0E072E0C00 00"
+                "00 00 00"
+            ).to_vec()),
+        ]);
+        assert_eq!(store.value(Key::State).as_deref(), Some(state));
+        assert_eq!(store.reads(), [Key::Settings, Key::State, Key::Settings]);
+    }
+
+    #[test_case(fixtures::SETTINGS_SET_HOURS; "schedule enabled")]
+    #[test_case(fixtures::SETTINGS_LIVE; "schedule off")]
+    fn inactive_temperature_update_does_not_start_preview(initial: &[u8]) {
+        let store = MemoryStore::with(&[
+            (Key::Settings, initial),
+            (Key::State, fixtures::STATE_INACTIVE),
+        ]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        assert!(
+            nightlight
+                .set_color_temperature("3400".parse().expect("valid temperature"))
+                .expect("temperature updates")
+        );
+        assert_eq!(store.writes(), [Key::Settings]);
+        let settings = stored_settings(&store);
+        assert_eq!(settings.color_temperature(), Some(3400));
+        assert!(!settings.is_previewing());
+        assert_eq!(
+            settings.mode(),
+            Settings::from_bytes(initial)
+                .expect("initial settings decode")
+                .mode()
+        );
+        assert_eq!(
+            store.value(Key::State).as_deref(),
+            Some(fixtures::STATE_INACTIVE)
+        );
+    }
+
+    #[test]
+    fn unchanged_inactive_temperature_does_not_write() {
+        let (nightlight, store) = nightlight(fixtures::STATE_INACTIVE, clock);
+        assert!(
+            !nightlight
+                .set_color_temperature("2790".parse().expect("valid temperature"))
+                .expect("settings read")
+        );
+        assert_eq!(store.writes(), []);
+    }
+
+    #[test_case("3400", true; "changed temperature")]
+    #[test_case("2790", false; "same temperature")]
+    fn preserves_existing_preview_without_reading_state(temperature: &str, changed: bool) {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_PREVIEWING)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        assert_eq!(
+            nightlight
+                .set_color_temperature(temperature.parse().expect("valid temperature"))
+                .expect("settings update"),
+            changed
+        );
+        assert!(stored_settings(&store).is_previewing());
+        assert_eq!(store.reads(), [Key::Settings]);
+        assert_eq!(store.writes().len(), usize::from(changed));
+    }
+
+    #[test]
+    fn unchanged_active_temperature_matches_native_preview_sequence_with_future_timestamps() {
+        let initial = hex!(
+            "434201000A0201002A06BCE6C5D6062A2B0E2143420100CA140E1500CA1E0E0700CF28B231CA320E132E1100CA3C0E062E260000000000"
+        );
+        let store = MemoryStore::with(&[
+            (Key::Settings, &initial),
+            (Key::State, fixtures::STATE_ACTIVE),
+        ]);
+        let nightlight = Nightlight::with_store(store.clone(), clock_before_fixtures);
+        assert!(
+            nightlight
+                .set_color_temperature("3161".parse().expect("valid temperature"))
+                .expect("preview refreshes")
+        );
+        assert_eq!(store.write_attempts(), vec![
+            (Key::Settings, hex!("434201000A0201002A06BEE6C5D6062A2B0E2443420100CA140E1500CA1E0E0700CF28B231CA320E132E1100CA3C0E062E2600C2460100000000").to_vec()),
+            (Key::Settings, hex!("434201000A0201002A06C0E6C5D6062A2B0E2143420100CA140E1500CA1E0E0700CF28B231CA320E132E1100CA3C0E062E260000000000").to_vec()),
+        ]);
+        assert_eq!(
+            store.value(Key::State).as_deref(),
+            Some(fixtures::STATE_ACTIVE)
+        );
+    }
+
+    #[test]
+    fn preview_cleanup_preserves_newer_temperature_schedule_unknown_fields_and_timestamp() {
+        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+        let newer = hex!(
+            "43420100 0A020100 2A 068AA4A7DA06 2A 0605 2B0E2A"
+            "43420100 C20A00 CA140E012E0F00 CA1E00 CF28C03E D02D0A CA320E132E1700 CA3C0E072E0C00 C24601 00"
+            "00 4201 00 4607 00"
+        );
+        store.queue_reads(
+            Key::Settings,
+            vec![
+                Ok(fixtures::SETTINGS_SET_HOURS.to_vec()),
+                Ok(newer.to_vec()),
+            ],
+        );
+        nightlight
+            .set_color_temperature("3400".parse().expect("valid temperature"))
+            .expect("temperature updates");
+        assert_eq!(
+            store.value(Key::Settings).expect("settings exist"),
+            hex!(
+                "43420100 0A020100 2A 068CA4A7DA06 2A 0605 2B0E27"
+                "43420100 C20A00 CA140E012E0F00 CA1E00 CF28C03E D02D0A CA320E132E1700 CA3C0E072E0C00 00"
+                "00 4201 00 4607 00"
+            )
+        );
+        assert_eq!(store.writes(), [Key::Settings, Key::Settings]);
+        assert_eq!(
+            store.value(Key::State).as_deref(),
+            Some(fixtures::STATE_ACTIVE)
+        );
+    }
+
+    #[test]
+    fn temperature_update_aborts_before_writing_when_state_cannot_be_read() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        let error = nightlight
+            .set_color_temperature("3400".parse().expect("valid temperature"))
+            .expect_err("state is missing");
+        assert_eq!(error.kind(), ErrorKind::NotFound);
+        assert_eq!(store.writes(), []);
+    }
+
+    #[test]
+    fn failed_preview_activation_does_not_run_cleanup() {
+        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+        store.queue_writes(Key::Settings, vec![Err(WIN32_ERROR(5))]);
+        let error = nightlight
+            .set_color_temperature("3400".parse().expect("valid temperature"))
+            .expect_err("write is denied");
+        assert_eq!(error.kind(), ErrorKind::Registry);
+        assert_eq!(store.writes(), [Key::Settings]);
+        assert_eq!(
+            store.value(Key::Settings).as_deref(),
+            Some(fixtures::SETTINGS_SET_HOURS)
+        );
+    }
+
+    #[test]
+    fn retries_preview_cleanup_after_a_failed_write() {
+        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+        store.queue_writes(Key::Settings, vec![Ok(()), Err(WIN32_ERROR(5)), Ok(())]);
+        assert!(
+            nightlight
+                .set_color_temperature("3400".parse().expect("valid temperature"))
+                .expect("cleanup retry succeeds")
+        );
+        assert_eq!(
+            store.writes(),
+            [Key::Settings, Key::Settings, Key::Settings]
+        );
+        assert!(!stored_settings(&store).is_previewing());
+        assert_eq!(stored_settings(&store).color_temperature(), Some(3400));
+        assert_eq!(
+            stored_settings(&store).modified(),
+            Some(UNIX_EPOCH + Duration::from_secs(1_800_000_002))
+        );
+    }
+
+    #[test]
+    fn retries_preview_cleanup_after_a_failed_read() {
+        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+        store.queue_reads(
+            Key::Settings,
+            vec![
+                Ok(fixtures::SETTINGS_SET_HOURS.to_vec()),
+                Err(WIN32_ERROR(5)),
+            ],
+        );
+        assert!(
+            nightlight
+                .set_color_temperature("3400".parse().expect("valid temperature"))
+                .expect("cleanup retry succeeds")
+        );
+        assert_eq!(store.writes(), [Key::Settings, Key::Settings]);
+        assert_eq!(
+            store.reads(),
+            [Key::Settings, Key::State, Key::Settings, Key::Settings]
+        );
+        assert!(!stored_settings(&store).is_previewing());
+        assert_eq!(stored_settings(&store).color_temperature(), Some(3400));
+    }
+
+    #[test_case(false; "cleanup writes fail")]
+    #[test_case(true; "cleanup reads fail")]
+    fn reports_exhausted_preview_cleanup_with_the_underlying_error(read_failure: bool) {
+        use std::error::Error as _;
+
+        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+        if read_failure {
+            store.queue_reads(
+                Key::Settings,
+                vec![
+                    Ok(fixtures::SETTINGS_SET_HOURS.to_vec()),
+                    Err(WIN32_ERROR(5)),
+                    Err(WIN32_ERROR(5)),
+                    Err(WIN32_ERROR(5)),
+                ],
+            );
+        } else {
+            store.queue_writes(
+                Key::Settings,
+                vec![
+                    Ok(()),
+                    Err(WIN32_ERROR(5)),
+                    Err(WIN32_ERROR(5)),
+                    Err(WIN32_ERROR(5)),
+                ],
+            );
+        }
+        let error = nightlight
+            .set_color_temperature("3400".parse().expect("valid temperature"))
+            .expect_err("cleanup cannot finish");
+        assert_eq!(error.kind(), ErrorKind::PreviewCleanup);
+        assert_eq!(
+            error.to_string(),
+            "clearing Night Light preview after writing the temperature; preview may remain active"
+        );
+        let source = error.source().expect("cleanup error has a source");
+        assert_eq!(
+            source.to_string(),
+            if read_failure {
+                "reading Night Light settings from the registry"
+            } else {
+                "writing Night Light settings to the registry"
+            }
+        );
+        let native = source
+            .source()
+            .expect("registry error has a source")
+            .downcast_ref::<windows_result::Error>()
+            .expect("source is a Windows error");
+        assert_eq!(native.code(), WIN32_ERROR(5).to_hresult());
+        assert_eq!(store.writes().len(), if read_failure { 1 } else { 4 });
+        assert!(stored_settings(&store).is_previewing());
+        assert_eq!(stored_settings(&store).color_temperature(), Some(3400));
+        assert_eq!(
+            store.value(Key::State).as_deref(),
+            Some(fixtures::STATE_ACTIVE)
         );
     }
 
