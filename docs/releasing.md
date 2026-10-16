@@ -30,12 +30,12 @@ must have a Trusted Publisher configured for this repository.
    cargo publish --workspace --dry-run --allow-dirty --locked
    ```
 
-3. Merge the release changes into `main`, then tag and push the merged commit. For the `0.4.0`
-   release:
+3. Merge the release changes into `main` and check out the merged commit. Replace `<version>`
+   below with its `workspace.package.version`, then tag and push that commit:
 
    ```shell
-   git tag v0.4.0
-   git push origin v0.4.0
+   git tag "v<version>"
+   git push origin "v<version>"
    ```
 
 4. Confirm the Release workflow succeeds. Check its summary for new crates requiring manual
@@ -48,20 +48,21 @@ A crate must already exist on crates.io before its owner can configure
 [Trusted Publishing](https://crates.io/docs/trusted-publishing). Publish each new crate once with
 an API token; existing crates continue to use Trusted Publishing.
 
-For `win-nightlight-watch 0.3.0`, first push the release tag and let the workflow publish the
-library and CLI. The watcher's packaged dev dependency requires `win-nightlight-lib 0.3.0`, so
-publish the watcher after that library version is available.
+Push the release tag first and let the workflow publish existing crates. Before publishing a new
+crate, confirm that the required versions of its workspace dependencies, including packaged dev
+dependencies, are available on crates.io. Publish new dependency crates before their consumers.
 
 1. Create a temporary API token at <https://crates.io/settings/tokens> with permission to publish
    the new crate, then run `cargo login` and paste the token.
-2. From a clean checkout of the `v0.3.0` commit on Windows, publish the watcher:
+2. From a clean checkout of the release tag on Windows, replace `<crate>` with the new crate's
+   name and publish it:
 
    ```shell
-   cargo publish --package win-nightlight-watch --locked
+   cargo publish --package "<crate>" --locked
    ```
 
-3. On crates.io, open **Settings → Trusted Publishing** for `win-nightlight-watch` and add a
-   GitHub publisher:
+3. On crates.io, open **Settings → Trusted Publishing** for the new crate and add a GitHub
+   publisher:
 
    | Field       | Value                |
    | :---------- | :------------------- |
@@ -72,8 +73,8 @@ publish the watcher after that library version is available.
 
 4. Revoke the temporary API token at <https://crates.io/settings/tokens> and run `cargo logout`.
 
-Subsequent release tags publish all three crates through Trusted Publishing. Rerunning the
-`v0.3.0` workflow skips the versions that are already published.
+Subsequent release tags publish the crate through Trusted Publishing. Rerunning the workflow
+for the same tag skips versions that are already published.
 
 ## Recovery
 

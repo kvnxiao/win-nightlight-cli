@@ -196,21 +196,6 @@ The format is Microsoft Bond CompactBinary v1 inside a CloudStore envelope. Micr
 document it; the library follows reverse-engineered schemas and writes back unchanged the fields it
 does not model, except fields inside a time of day. See [`docs`](docs/) for the format details.
 
-### Migrate from 0.3 to 0.4
-
-Add the required policy argument to `Nightlight::set_color_temperature`. Choose `Automatic` to
-preserve 0.3 behavior, or `Always` when every call must request a complete preview refresh:
-
-```rust
-use win_nightlight_lib::RefreshPolicy;
-
-nightlight.set_color_temperature(temperature, RefreshPolicy::Automatic)?;
-nightlight.set_color_temperature(temperature, RefreshPolicy::Always)?;
-```
-
-The `Settings::set_color_temperature` setter and the `wnl temp` command keep their existing
-interfaces. The CLI uses `Automatic`.
-
 ## `win-nightlight-watch`
 
 `Watcher` observes value changes in one existing registry key under `HKEY_CURRENT_USER`.
