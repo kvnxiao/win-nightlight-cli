@@ -3,7 +3,7 @@ resolver = "3"
 members = ["win-nightlight-cli", "win-nightlight-lib", "win-nightlight-watch"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -12,7 +12,7 @@ readme = "README.md"
 keywords = ["windows", "night-light", "registry", "blue-light"]
 
 [workspace.dependencies]
-win-nightlight-lib = { path = "win-nightlight-lib", version = "0.3.0" }
+win-nightlight-lib = { path = "win-nightlight-lib", version = "0.4.0" }
 hex-literal = "1.1.0"
 test-case = "3.4.0"
 thiserror = "2.0.21"

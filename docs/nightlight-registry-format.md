@@ -208,12 +208,17 @@ A writer that changes one value does not modify the other value:
 - Changing the schedule or the color temperature writes only the settings value and stamps the
   envelope timestamp.
 
-`Nightlight::set_color_temperature` writes only settings:
+`Nightlight::set_color_temperature` writes only settings. With `RefreshPolicy::Automatic`:
 
 - If preview is already active, it stores a changed temperature and preserves field 70.
 - Otherwise, if Night Light is active, it writes the temperature with field 70 true, then rereads
   settings and clears field 70. It does not sleep between writes.
 - If Night Light is inactive, it stores a changed temperature without starting preview.
+
+With `RefreshPolicy::Always`, every call writes the requested temperature with field 70 true,
+then rereads settings and clears field 70. This includes unchanged temperatures and preexisting
+preview. It does not read the on/off state or sleep between writes. Cleanup preserves other fields
+from the fresh settings read, including a newer temperature written by another program.
 
 `Nightlight::write_settings` and `Nightlight::update_settings` do not add this preview sequence.
 

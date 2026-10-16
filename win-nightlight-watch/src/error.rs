@@ -7,7 +7,7 @@ use windows_sys::Win32::Foundation::ERROR_PATH_NOT_FOUND;
 /// Result of a registry watcher operation.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-/// Report a watcher failure and preserve its underlying Windows error.
+/// Report a watcher failure and preserve its underlying error.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 pub struct Error(#[from] Repr);
@@ -16,10 +16,12 @@ impl Error {
     /// Return the category of this failure.
     pub fn kind(&self) -> ErrorKind {
         match &self.0 {
-            Repr::InvalidPath | Repr::Timeout => ErrorKind::InvalidInput,
+            Repr::Timeout => ErrorKind::InvalidInput,
+            Repr::Read { .. } => ErrorKind::Read,
             Repr::WaitStatus(_) => ErrorKind::Windows,
             Repr::Open { source }
             | Repr::CreateEvent { source }
+            | Repr::ResetEvent { source }
             | Repr::Register { source }
             | Repr::Wait { source } => match WIN32_ERROR::from_error(source).map(|code| code.0) {
                 Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) => ErrorKind::NotFound,
@@ -38,22 +40,27 @@ pub enum ErrorKind {
     NotFound,
     /// Windows reports that the watched key was deleted.
     KeyDeleted,
-    /// The path is empty or has a NUL, or the timeout exceeds the finite range.
+    /// The timeout exceeds the finite range.
     InvalidInput,
     /// A Windows registry or event operation failed.
     Windows,
+    /// Reading or decoding the snapshot failed; notification registration
+    /// remains active.
+    Read,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Repr {
-    #[error("registry path must be nonempty and must not contain NUL")]
-    InvalidPath,
     #[error("timeout exceeds {MAX_TIMEOUT_MILLIS} milliseconds")]
     Timeout,
     #[error("opening the registry key for notifications")]
     Open { source: windows_result::Error },
     #[error("creating the notification event")]
     CreateEvent { source: windows_result::Error },
+    #[error("resetting the notification event")]
+    ResetEvent { source: windows_result::Error },
+    #[error("reading the Night Light snapshot")]
+    Read { source: win_nightlight_lib::Error },
     #[error("registering for registry changes")]
     Register { source: windows_result::Error },
     #[error("waiting for a registry notification")]

@@ -1,75 +1,107 @@
 # Change notifications
 
-`win-nightlight-watch` observes value changes in one existing registry key under
-`HKEY_CURRENT_USER`. Use it with `win-nightlight-lib` to refresh Night Light state or settings
-when Windows or another application changes them. Both crates support Windows only.
+`win-nightlight-watch` waits for Night Light changes and returns decoded settings or state through
+`win-nightlight-lib`. A snapshot describes the value when the read occurs, which can be later than
+the change that signaled the watcher. Both crates support Windows only.
 
-The watcher opens the key with notification access and creates one auto-reset event. It does
-not read or write registry values, create missing keys, or start a background thread.
+The watcher does not write registry values, create missing keys, or start a background thread.
+The calling thread performs each wait and read.
 
 ## Watch Night Light
 
-Add both dependencies:
+Add the watcher dependency:
 
 ```shell
-cargo add win-nightlight-lib win-nightlight-watch
+cargo add win-nightlight-watch
 ```
 
-`win-nightlight-lib` exports `SETTINGS_KEY_PATH` and `STATE_KEY_PATH`, relative to
-`HKEY_CURRENT_USER`. Each key stores its Night Light payload in the `Data` value. Create a
-`Watcher` for each key you need before the initial `Nightlight` read.
+Use `Watcher::settings()` for `Snapshot::Settings(win_nightlight_lib::Settings)` or
+`Watcher::state()` for `Snapshot::State(win_nightlight_lib::State)`. Each constructor registers
+for changes to the corresponding Night Light registry key without reading its initial value.
+If you need to name the decoded types directly, also add `win-nightlight-lib` as a dependency.
 
-Each watcher has exactly one notification consumer. Use this sequence:
+Create every watcher you need before calling `read_current()` on each for the initial data.
+Registering first allows changes during the initial reads to signal a notification.
+`read_current()` does not consume a pending notification or change registration.
 
-1. Wait with `wait_timeout(Duration)` or an external Windows wait on the event handle.
-2. If the wait times out, wait again without rearming.
-3. If the wait consumes a notification, call `rearm()` exactly once. On any rearm error,
-   drop the watcher and stop using that instance.
-4. Read the current value through `Nightlight`, then repeat the wait.
+For a blocking loop, call `wait_timeout(Duration)`:
 
-See the [crate documentation](https://docs.rs/win-nightlight-watch) for a compiled usage
-example that follows this order.
+1. On a notification, the watcher resets the event and registers for the next change before
+   reading the current record. It returns `Some(Snapshot)` after a successful read.
+2. On timeout, it returns `None` without reading or changing registration. Wait again when ready.
+3. On an error, follow the [recovery contract](#errors-and-recovery) below.
 
-Notifications can combine several writes. They indicate that the key needs rereading;
-they do not identify a value or count writes. Changes between consuming a signal and rearming
-need not signal again, but the following read retrieves current data. Changes after rearming
-can signal the next notification.
+See the [crate documentation](https://docs.rs/win-nightlight-watch) for a compiled usage example.
 
-Calling `rearm()` while the previous registration is pending allocates additional native wait
-operations. External waits consume the event without updating Rust-side state, so the caller
-must enforce the sequence above.
+## Snapshot consistency
+
+The native registry notification reports that the key changed; it does not include the written
+value. The watcher reads the current `Data` value using the library's public read operations.
+
+- Multiple writes can produce one notification, so intermediate values may be omitted.
+- A write after rearming can appear in the current read and signal the next notification.
+  Repeated snapshots can therefore describe the same data; the watcher does not deduplicate them.
+- Settings and state are separate records. Reading both does not produce an atomic pair, and
+  neither record proves that Windows applied the corresponding display output.
+
+Changes between consuming a signal and rearming need not signal again, but the following read
+retrieves current data. Another writer can change the value again before the caller receives it.
+Applications that make control decisions must perform any fresh reads their own contracts require.
 
 ## Integrate with a Windows event loop
 
-`Watcher` implements `AsHandle` and `AsRawHandle`. Wait on both Night Light watchers with a
-wait-any operation to identify which key needs rereading. Keep the watchers alive during the
-wait, and rearm only the watcher whose notification was consumed.
+`Watcher` implements `AsHandle` and `AsRawHandle` for its manual-reset event. External waits observe
+readiness without consuming the signal. Use a wait-any operation for settings and state, keep both
+watchers alive during the wait, and call `read_pending()` on the signaled watcher. That method
+consumes the signal, rearms, and reads the current snapshot. It returns `None` without reading or
+rearming if no signal is pending. A successful snapshot read uses `Some(Snapshot)`.
+
+Each watcher has exactly one notification consumer. Callers must not reset or signal its event or
+register notifications on its behalf. The watcher is `Send` but not `Sync`; notification
+registration survives the thread that created it.
 
 A thread that processes window messages must use a message-aware wait, such as
 `MsgWaitForMultipleObjectsEx`, instead of blocking in `wait_timeout`. Other threads can use
-`wait_timeout` or `WaitForMultipleObjects`. The watcher is `Send` but not `Sync`; registration
-survives the thread that created it.
+`wait_timeout` or `WaitForMultipleObjects`. Snapshot reads still run synchronously on the calling
+thread, including after an external wait.
+
+## Defer reads and retry later
+
+If application policy temporarily forbids reads, call `discard_pending()` on a signaled watcher.
+It consumes the notification and rearms without reading a snapshot, returning `true` when it
+consumed a signal or `false` when none was pending. The watcher does not save discarded changes
+for later delivery.
+
+Call `read_current()` when the application chooses to retry or resynchronize, even if no new
+notification has arrived. A successful read does not consume any pending signal, so the next
+notification read may return the same data. The watcher does not schedule retries.
 
 ## Timeouts
 
-`wait_timeout` performs one native wait. Zero polls immediately; positive fractional
-milliseconds round up. Durations above 4,294,967,294 milliseconds return `InvalidInput` before
-waiting. Finite durations never become infinite waits. Time spent asleep does not count
-toward the native timeout on Windows 11.
+The duration passed to `wait_timeout` bounds one native wait, not the subsequent snapshot read.
+Zero polls immediately; positive fractional milliseconds round up. Durations above 4,294,967,294
+milliseconds return `InvalidInput` before waiting. Finite durations never become infinite waits.
+Time spent asleep does not count toward the native timeout on Windows 11.
 
 ## Errors and recovery
 
 Inspect `Error::kind()` without parsing messages:
 
-| Kind | Meaning |
-| :--- | :------ |
-| `NotFound` | The key does not exist. |
-| `KeyDeleted` | Windows reports that the watched key was deleted. |
-| `InvalidInput` | The path is empty or has a NUL character, or the timeout is too large. |
-| `Windows` | Another registry or event operation failed. |
+| Kind | Meaning and action |
+| :--- | :----------------- |
+| `Read` | Reading or decoding the snapshot failed. Registration is preserved; retry or defer reads according to application policy. |
+| `InvalidInput` | The timeout is too large. Use a valid duration; the notification was not consumed. |
+| `NotFound` | The key does not exist. A constructor cannot create a watcher until the key exists. Drop an existing watcher if a notification operation reports this error. |
+| `KeyDeleted` | Windows reports that the watched key was deleted. Drop the watcher. |
+| `Windows` | Another registry or event operation failed. Drop the watcher if construction had succeeded. |
 
-The error source chain preserves underlying Windows errors and their native codes.
+A `Read` error preserves the underlying `win_nightlight_lib::Error` in its source chain. Reads use
+the library's bounded retries for concurrent value changes; the watcher does not add a retry loop.
+For notification-driven reads, rearming succeeds before the read starts, so a read failure does
+not stop future notifications. Explicit `read_current()` calls do not change registration.
 
-After any rearm error, drop the watcher. The application can attempt to create a replacement,
-but reopening fails while the key is absent. An existing watcher does not follow a replacement
-key at the same path. The crate does not recreate keys or retry automatically.
+A native wait, event-reset, or registration failure stops the operation before reading a snapshot.
+The error source chain preserves underlying Windows errors and their native codes when available.
+After such a failure, drop the watcher. The application can attempt to create a replacement, but
+reopening fails while the key is absent. An existing watcher does not follow a replacement key at
+the same path. The crate does not recreate keys or reopen watchers automatically.
