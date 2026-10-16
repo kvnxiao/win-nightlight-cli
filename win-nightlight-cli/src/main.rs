@@ -15,6 +15,7 @@ use std::io::Write;
 use std::time::SystemTime;
 use win_nightlight_lib::ColorTemperature;
 use win_nightlight_lib::Nightlight;
+use win_nightlight_lib::RefreshPolicy;
 use win_nightlight_lib::Schedule;
 use win_nightlight_lib::ScheduleMode;
 use win_nightlight_lib::Settings;
@@ -126,7 +127,7 @@ fn run(command: Command, out: &mut impl Write) -> Result<()> {
             nightlight.toggle()?;
         }
         Command::Temp { kelvin } => {
-            nightlight.set_color_temperature(kelvin)?;
+            nightlight.set_color_temperature(kelvin, RefreshPolicy::Automatic)?;
         }
         Command::Schedule { schedule } => {
             nightlight.update_settings(|settings| settings.set_schedule(schedule.into()))?;

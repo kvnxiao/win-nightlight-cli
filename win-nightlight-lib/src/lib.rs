@@ -7,7 +7,8 @@
 //!   on or off.
 //!
 //! [`Nightlight`] writes settings and state separately. Temperature updates
-//! read both values and write only settings; on/off updates write only state.
+//! can read both values and write only settings; on/off updates write only
+//! state.
 //!
 //! Both values are Bond `CompactBinary` v1 payloads inside a `CloudStore`
 //! envelope. Microsoft does not document this format; this crate follows
@@ -34,6 +35,7 @@
 //! ```no_run
 //! use win_nightlight_lib::ColorTemperature;
 //! use win_nightlight_lib::Nightlight;
+//! use win_nightlight_lib::RefreshPolicy;
 //! use win_nightlight_lib::Schedule;
 //! use win_nightlight_lib::TimeOfDay;
 //!
@@ -42,7 +44,7 @@
 //! let end: TimeOfDay = "07:00".parse()?;
 //!
 //! let nightlight = Nightlight::new();
-//! nightlight.set_color_temperature(temperature)?;
+//! nightlight.set_color_temperature(temperature, RefreshPolicy::Automatic)?;
 //! nightlight.update_settings(|settings| {
 //!     settings.set_schedule(Schedule::SetHours {
 //!         start: Some(start),
@@ -77,6 +79,7 @@ pub use crate::error::Error;
 pub use crate::error::ErrorKind;
 pub use crate::error::Result;
 pub use crate::nightlight::Nightlight;
+pub use crate::nightlight::RefreshPolicy;
 pub use crate::settings::ColorTemperature;
 pub use crate::settings::Schedule;
 pub use crate::settings::ScheduleKind;

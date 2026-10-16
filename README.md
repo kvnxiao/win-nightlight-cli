@@ -124,43 +124,60 @@ The library reads and writes the two registry values that store Night Light:
 - `State`: whether Night Light is on now, what caused the last change, and when it happened.
 
 `Nightlight` is the entry point. Its temperature operation can read settings and state but writes
-only settings. On/off operations write only state and preserve the schedule. Each write advances
-the CloudStore timestamp using the supplied record's previous timestamp and the current time.
+only settings. On/off operations write only state and preserve the schedule.
 
-`Nightlight::set_color_temperature` is the temperature operation used by `wnl temp`. It uses the
-temporary color-temperature preview that Windows Settings applies during slider interactions:
+Preview is the temporary Night Light setting Windows Settings uses while adjusting its temperature
+slider. `Nightlight::set_color_temperature` takes a `RefreshPolicy`. `Automatic`, used by `wnl temp`,
+selects the refresh behavior from the current settings and state:
 
 - If preview is already active, it preserves preview and stores a changed temperature.
 - Otherwise, if Night Light is active, it writes the temperature with preview enabled, then rereads
   settings and clears preview. It repeats this sequence even when the temperature is unchanged.
 - If Night Light is inactive, it stores a changed temperature without starting preview.
 
-The writes run without a sleep; each advances the stored timestamp by at least two seconds.
-Schedule settings and on/off state are preserved.
+`Always` writes the requested temperature with preview enabled, then rereads settings and clears
+preview on every call. This applies even when the temperature already matches or preview is already
+active. It does not read or write the on/off state, so it also requests preview while Night Light is
+off. Both policies preserve schedule settings. The return value reports whether settings were
+written; a successful `Always` call returns `true`.
 
-Avoid overlapping temperature calls or using the native slider during a call. Cleanup rereads
-settings to preserve intervening changes, but registry updates are not atomic with other writers.
+The writes run without a sleep. Each uses the later of the current Unix time and the timestamp in
+the decoded `Settings` or `State` record plus two seconds, saturating at `u64::MAX`.
+`write_settings` and `write_state` use the record supplied by the caller. Temperature updates read
+settings first and reread them for cleanup. Rapid refreshes can advance timestamps ahead of the
+clock.
+
+Avoid overlapping temperature calls or using the Night Light slider in Windows Settings during a
+call. Cleanup rereads
+settings to preserve intervening changes, including a newer temperature, but registry updates are
+not atomic with other writers. Successful writes do not confirm a display update or guarantee that
+another writer has not changed the requested values.
+
 If three cleanup attempts fail, `ErrorKind::PreviewCleanup` reports that the temperature was
-written and preview may remain active. Successful registry writes do not confirm a display update.
+written and preview may remain active. A later call with `Always` repeats the complete refresh,
+including when the requested temperature is unchanged. `Automatic` preserves preexisting preview
+and therefore does not provide that recovery contract.
 
 `update_settings` and `write_settings` write at most once without adding this preview sequence.
 
 ```rust
 use win_nightlight_lib::ColorTemperature;
 use win_nightlight_lib::Nightlight;
+use win_nightlight_lib::RefreshPolicy;
 use win_nightlight_lib::Schedule;
 
 let nightlight = Nightlight::new();
 nightlight.set_active(true)?;
 
 let temperature: ColorTemperature = "3400K".parse()?;
-nightlight.set_color_temperature(temperature)?;
+nightlight.set_color_temperature(temperature, RefreshPolicy::Automatic)?;
 nightlight.update_settings(|settings| settings.set_schedule(Schedule::SunsetToSunrise))?;
 ```
 
 | Type                           | Purpose                                                                 |
 | :----------------------------- | :---------------------------------------------------------------------- |
 | `Nightlight`                   | Reads, writes, and updates the settings and state values.               |
+| `RefreshPolicy`               | Selects conditional refresh or a complete refresh on every temperature call. |
 | `Settings`                     | Schedule and color temperature; `from_bytes` and `to_bytes` round-trip. |
 | `State`                        | Whether Night Light is on, the transition cause, and its time.          |
 | `ColorTemperature`             | Validated color temperature from 1200K to 6500K.                        |
@@ -178,6 +195,21 @@ Both values are stored as `REG_BINARY` values named `Data` under:
 The format is Microsoft Bond CompactBinary v1 inside a CloudStore envelope. Microsoft does not
 document it; the library follows reverse-engineered schemas and writes back unchanged the fields it
 does not model, except fields inside a time of day. See [`docs`](docs/) for the format details.
+
+### Migrate from 0.3 to 0.4
+
+Add the required policy argument to `Nightlight::set_color_temperature`. Choose `Automatic` to
+preserve 0.3 behavior, or `Always` when every call must request a complete preview refresh:
+
+```rust
+use win_nightlight_lib::RefreshPolicy;
+
+nightlight.set_color_temperature(temperature, RefreshPolicy::Automatic)?;
+nightlight.set_color_temperature(temperature, RefreshPolicy::Always)?;
+```
+
+The `Settings::set_color_temperature` setter and the `wnl temp` command keep their existing
+interfaces. The CLI uses `Automatic`.
 
 ## `win-nightlight-watch`
 

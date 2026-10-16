@@ -30,12 +30,12 @@ must have a Trusted Publisher configured for this repository.
    cargo publish --workspace --dry-run --allow-dirty --locked
    ```
 
-3. Merge the release changes into `main`, then tag and push the merged commit. For the `0.3.0`
+3. Merge the release changes into `main`, then tag and push the merged commit. For the `0.4.0`
    release:
 
    ```shell
-   git tag v0.3.0
-   git push origin v0.3.0
+   git tag v0.4.0
+   git push origin v0.4.0
    ```
 
 4. Confirm the Release workflow succeeds. Check its summary for new crates requiring manual
