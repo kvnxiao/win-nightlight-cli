@@ -138,6 +138,10 @@ jobs:
         shell: bash
         run: just check-msrv win-nightlight-cli
 
+      - name: Check MSRV of the watcher
+        shell: bash
+        run: just check-msrv win-nightlight-watch
+
   package:
     runs-on: windows-latest
     steps:

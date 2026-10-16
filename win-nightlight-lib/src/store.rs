@@ -2,6 +2,12 @@ use std::fmt;
 use windows_registry::CURRENT_USER;
 use windows_registry::Type;
 
+/// Registry subkey for Night Light settings, relative to `HKEY_CURRENT_USER`.
+pub const SETTINGS_KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.settings\windows.data.bluelightreduction.settings";
+
+/// Registry subkey for Night Light state, relative to `HKEY_CURRENT_USER`.
+pub const STATE_KEY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate\windows.data.bluelightreduction.bluelightreductionstate";
+
 const VALUE_NAME: &str = "Data";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -13,12 +19,8 @@ pub(crate) enum Key {
 impl Key {
     pub(crate) fn path(self) -> &'static str {
         match self {
-            Self::Settings => {
-                r"Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.settings\windows.data.bluelightreduction.settings"
-            }
-            Self::State => {
-                r"Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Current\default$windows.data.bluelightreduction.bluelightreductionstate\windows.data.bluelightreduction.bluelightreductionstate"
-            }
+            Self::Settings => SETTINGS_KEY_PATH,
+            Self::State => STATE_KEY_PATH,
         }
     }
 }

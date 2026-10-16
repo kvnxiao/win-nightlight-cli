@@ -15,9 +15,9 @@ default-target = "x86_64-pc-windows-msvc"
 targets = []
 
 [dependencies]
-thiserror = "2.0.21"
-windows-registry = "0.100.0"
-windows-result = "0.100.0"
+thiserror.workspace = true
+windows-registry.workspace = true
+windows-result.workspace = true
 
 [lints]
 workspace = true

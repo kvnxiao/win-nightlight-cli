@@ -38,7 +38,57 @@ jobs:
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
 
-      - name: Publish crates
-        run: cargo publish --workspace --locked
+      - name: Publish existing crates
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata="$(cargo metadata --no-deps --format-version 1 --locked)"
+          crates="$(jq -ber '
+            .workspace_members as $members
+            | .packages[]
+            | select(.id as $id | $members | index($id))
+            | select(.publish == null or (.publish | index("crates-io")))
+            | .name
+          ' <<< "$metadata")"
+          version="${GITHUB_REF_NAME#v}"
+          response_file="$(mktemp)"
+          trap 'rm -f "$response_file"' EXIT
+          packages=()
+          while IFS= read -r crate; do
+            status="$(curl --silent --show-error --retry 3 \
+              --user-agent 'win-nightlight-cli-release (https://github.com/kvnxiao/win-nightlight-cli)' \
+              --output "$response_file" --write-out '%{http_code}' \
+              "https://crates.io/api/v1/crates/$crate")"
+            case "$status" in
+              200)
+                published="$(jq -br --arg version "$version" '
+                  .versions
+                  | if type != "array" then error("missing versions array")
+                    else any(.num == $version) end
+                ' "$response_file")"
+                if [ "$published" = true ]; then
+                  echo "Skipping $crate $version: already published."
+                elif [ "$published" = false ]; then
+                  packages+=(--package "$crate")
+                else
+                  echo "::error::Checking $crate returned an invalid registry response."
+                  exit 1
+                fi
+                ;;
+              404)
+                echo "::notice::Publish $crate $version manually once, then configure Trusted Publishing."
+                echo "- Publish new crate \`$crate $version\` manually, then configure Trusted Publishing." >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              *)
+                echo "::error::Checking $crate on crates.io failed with HTTP $status."
+                exit 1
+                ;;
+            esac
+          done <<< "$crates"
+          if [ "${#packages[@]}" -gt 0 ]; then
+            cargo publish --locked "${packages[@]}"
+          else
+            echo "All existing crates already have version $version."
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

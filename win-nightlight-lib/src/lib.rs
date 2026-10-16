@@ -84,4 +84,6 @@ pub use crate::settings::ScheduleMode;
 pub use crate::settings::Settings;
 pub use crate::state::State;
 pub use crate::state::TransitionCause;
+pub use crate::store::SETTINGS_KEY_PATH;
+pub use crate::store::STATE_KEY_PATH;
 pub use crate::time::TimeOfDay;

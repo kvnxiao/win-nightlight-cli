@@ -1,7 +1,10 @@
-# `wnl` CLI / `win-nightlight-lib`
+# Windows Night Light libraries and CLI
 
-A Rust library and CLI that turn Windows 11 Night Light on and off and configure its schedule and
-color temperature.
+Rust libraries and a CLI for Windows 11 Night Light:
+
+- `win-nightlight-lib` reads and writes Night Light state, schedules, and color temperature.
+- `win-nightlight-watch` waits for registry changes so applications can reread Night Light data.
+- `win-nightlight-cli` installs the `wnl` command.
 
 **NOTE: Tested on Windows 11 24H2 (OS build 26100) and build 26300.** Older Windows versions may
 store Night Light differently.
@@ -18,6 +21,12 @@ Add the library to a project:
 
 ```shell
 cargo add win-nightlight-lib
+```
+
+Add change notifications when needed:
+
+```shell
+cargo add win-nightlight-watch
 ```
 
 ## `wnl` CLI usage
@@ -153,3 +162,21 @@ Both values are stored as `REG_BINARY` values named `Data` under:
 The format is Microsoft Bond CompactBinary v1 inside a CloudStore envelope. Microsoft does not
 document it; the library follows reverse-engineered schemas and writes back unchanged the fields it
 does not model, except fields inside a time of day. See [`docs`](docs/) for the format details.
+
+## `win-nightlight-watch`
+
+`Watcher` observes value changes in one existing registry key under `HKEY_CURRENT_USER`.
+Use `SETTINGS_KEY_PATH` and `STATE_KEY_PATH` from `win-nightlight-lib` to watch Night Light.
+The watcher opens the key for notifications and creates an event; it does not start a thread.
+
+Create each watcher before reading the initial data. After a successful wait, call `rearm()`
+once before rereading through `Nightlight`. Do not rearm after a timeout. Notifications can
+combine multiple writes; they tell the application to read the current data.
+
+Use `wait_timeout(Duration)` for a blocking wait, or `AsHandle` / `AsRawHandle` to integrate
+with a native Windows wait or message loop. Each watcher has one notification consumer.
+Drop it after any rearm error; recovery by reopening the key belongs to the application.
+
+See [change notifications](docs/change-notifications.md) for lifecycle, timeout, and error
+contracts, and the [crate documentation](https://docs.rs/win-nightlight-watch) for a compiled
+usage example.
