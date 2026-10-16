@@ -130,6 +130,50 @@ encode: zigzag(2790) = 5580, varint(5580) = [0xCC, 0x2B]
 decode: varint([0xCC, 0x2B]) = 5580, zigzag_decode(5580) = 2790
 ```
 
+### Observed native slider behavior
+
+Windows 11 Settings uses field 70 to preview the selected color temperature. During a drag,
+preview remains true across temperature updates and returns to false afterward. The native UI
+also previews the selected temperature while Night Light is off.
+
+Clicking the slider to jump to a new strength produced three successive settings values:
+
+1. The new temperature, with preview false.
+2. The same temperature, with preview true.
+3. The same temperature, with preview false.
+
+In the captured settings values, only fields 40 and 70 changed. Each write also advanced the
+envelope timestamp. These are observations of the native UI, not a documented Windows API
+contract.
+
+A capture on 2026-10-16 UTC measured four click interactions. One `win-nightlight-watch::Watcher`
+per key registered notifications through `RegNotifyChangeKeyValue`. The recorder sampled its
+clocks after `WaitForMultipleObjects` returned a notification and before rearming and reading
+the value. Each interval below runs from the snapshot with preview true to the next snapshot
+with preview false:
+
+| Click | Notification observation interval | Registry-key last-write interval | Envelope timestamp increase |
+| ----- | --------------------------------- | -------------------------------- | --------------------------- |
+| 1     | 60.096 ms                         | 60.173 ms                        | 2 seconds                   |
+| 2     | 72.958 ms                         | 72.323 ms                        | 2 seconds                   |
+| 3     | 51.225 ms                         | 51.204 ms                        | 2 seconds                   |
+| 4     | 96.816 ms                         | 96.986 ms                        | 2 seconds                   |
+
+The recording used `QueryPerformanceCounter` at 10 MHz and `GetSystemTimePreciseAsFileTime`
+around each registry read. The registry-key times came from `RegQueryInfoKeyW`. Clock samples
+bracketing the reads were 2.2–10.8 microseconds apart. Notifications were observed 0.093–1.532 ms
+after the corresponding key's last-write time; the median was 0.706 ms.
+
+Across the drag and click interactions, 59 consecutive settings timestamp increments were exactly
+two seconds. The timestamp advanced 118 seconds during 6.230 seconds of observed activity. The
+UTC sample after the final settings read was `2026-10-16T02:03:29.2943260Z`, while the raw envelope
+value was `1792116321`, or `2026-10-16T02:05:21Z`: 111.705674 seconds ahead of that clock sample.
+
+These measurements describe notification observations and registry metadata, not exact write-call
+or display-update times. Notifications can combine writes, and the value and metadata reads are
+not atomic. The measured preview intervals do not establish a required minimum delay or verify
+that back-to-back preview writes update the display.
+
 ## Inner State Schema
 
 | Field ID | Bond Type   | Default | Description                                                                              |
@@ -171,7 +215,7 @@ A writer that changes one value does not modify the other value:
   settings and clears field 70. It does not sleep between writes.
 - If Night Light is inactive, it stores a changed temperature without starting preview.
 
-Direct settings writes do not add this sequence.
+`Nightlight::write_settings` and `Nightlight::update_settings` do not add this preview sequence.
 
 A writer also preserves fields it does not model, at the inner struct and at every envelope level,
 and writes them back in ascending field-ID order. `win-nightlight-lib` does not preserve unknown fields
