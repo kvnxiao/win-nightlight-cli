@@ -3,7 +3,7 @@
 The workspace publishes three crates to crates.io at a shared version:
 
 - `win-nightlight-lib`: Night Light reads and writes.
-- `win-nightlight-watch`: registry change notifications.
+- `win-nightlight-watch`: Night Light change notifications with decoded snapshots.
 - `win-nightlight-cli`: the CLI, which installs the `wnl` binary.
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`. The workflow checks that the tag matches

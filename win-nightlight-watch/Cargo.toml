@@ -1,6 +1,6 @@
 [package]
 name = "win-nightlight-watch"
-description = "Wait for Windows registry changes alongside win-nightlight-lib"
+description = "Observe Night Light changes and read decoded settings and state"
 categories = ["os::windows-apis"]
 version.workspace = true
 edition.workspace = true
@@ -15,6 +15,7 @@ default-target = "x86_64-pc-windows-msvc"
 targets = []
 
 [dependencies]
+win-nightlight-lib.workspace = true
 thiserror.workspace = true
 windows-registry.workspace = true
 windows-result.workspace = true
@@ -27,7 +28,7 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 test-case.workspace = true
-win-nightlight-lib.workspace = true
+hex-literal.workspace = true
 
 [lints.rust]
 unsafe_code = "deny"

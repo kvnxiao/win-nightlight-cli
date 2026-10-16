@@ -8,8 +8,7 @@ command-line app and two Rust libraries:
 - `win-nightlight-cli` installs `wnl.exe` to turn Night Light on or off, set its color temperature,
   and configure its schedule.
 - `win-nightlight-lib` lets Rust applications read and write Night Light settings and state.
-- `win-nightlight-watch` notifies Rust applications when registry values change so they can reread
-  Night Light data.
+- `win-nightlight-watch` waits for Night Light changes and returns decoded settings or state.
 
 **Tested on Windows 11 24H2 (OS build 26100) and build 26300.** Older Windows versions may
 store Night Light differently.
@@ -20,7 +19,7 @@ store Night Light differently.
 - [Installation](#installation)
 - [`win-nightlight-cli`: `wnl.exe` usage](#win-nightlight-cli-wnlexe-usage)
 - [`win-nightlight-lib`: Rust API](#win-nightlight-lib)
-- [`win-nightlight-watch`: registry notifications](#win-nightlight-watch)
+- [`win-nightlight-watch`: change snapshots](#win-nightlight-watch)
 
 ## Installation
 
@@ -221,23 +220,31 @@ See [`docs`](docs/) for the format details.
 
 ## `win-nightlight-watch`
 
-Use the watcher to wait for registry changes from a Rust application. Add it to your project:
+Use the watcher to observe Night Light changes from a Rust application. Add it to your project:
 
 ```shell
 cargo add win-nightlight-watch
 ```
 
-`Watcher` observes value changes in one existing registry key under `HKEY_CURRENT_USER`.
-Use `SETTINGS_KEY_PATH` and `STATE_KEY_PATH` from `win-nightlight-lib` to watch Night Light.
-The watcher opens the key for notifications and creates an event; it does not start a thread.
+Create `Watcher::settings()` or `Watcher::state()` for the record you need. Each watcher registers
+for changes before returning; call `read_current()` for its initial snapshot. If you need both
+records, create both watchers before reading either.
 
-Create each watcher before reading the initial data. After a successful wait, call `rearm()`
-once before rereading through `Nightlight`. Do not rearm after a timeout. Notifications can
-combine multiple writes; they tell the application to read the current data.
+`wait_timeout(Duration)` waits for a change, registers for the next notification, and reads the
+current record through `win-nightlight-lib`. It returns `Some(Snapshot::Settings(...))` or
+`Some(Snapshot::State(...))`, or `None` on timeout. The watcher does not start a thread.
 
-Use `wait_timeout(Duration)` for a blocking wait, or `AsHandle` / `AsRawHandle` to integrate
-with a native Windows wait or message loop. Each watcher has one notification consumer.
-Drop it after any rearm error; recovery by reopening the key belongs to the application.
+A snapshot describes the value when it was read. Windows can combine notifications, and repeated
+snapshots can describe the same data. The API does not capture the exact value that triggered a
+notification or provide an atomic settings-and-state pair.
+
+Use `AsHandle` or `AsRawHandle` with a native Windows wait or message loop, then call
+`read_pending()` on the signaled watcher. External waits preserve the signal until the watcher
+consumes it. Each watcher has one notification consumer and manages its own rearming.
+
+If reads must be deferred, `discard_pending()` consumes and rearms without reading. Use
+`read_current()` to retry on a trigger chosen by the application. `ErrorKind::Read` preserves
+notification registration; notification failures require dropping the watcher.
 
 See [change notifications](docs/change-notifications.md) for lifecycle, timeout, and error
 contracts, and the [crate documentation](https://docs.rs/win-nightlight-watch) for a compiled

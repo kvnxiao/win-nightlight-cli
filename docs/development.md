@@ -58,7 +58,7 @@ Run `just check` before opening a pull request. CI runs each task as a separate 
 ## Tests
 
 - Byte fixtures are hex constants: the library keeps them in `win-nightlight-lib/src/fixtures.rs`,
-  and the CLI tests define the few they render. Expected decoded values come from decoding the
+  and the CLI and watcher tests define the fixtures they use. Expected decoded values come from decoding the
   fixtures by hand, not from the code under test.
 - CLI output tests use [`insta`](https://insta.rs) snapshots in `win-nightlight-cli/src/snapshots/`.
   After a deliberate output change, run `cargo insta test --review` (or `cargo insta review` after
@@ -68,7 +68,8 @@ Run `just check` before opening a pull request. CI runs each task as a separate 
 - `Nightlight` tests run against an in-memory store with a fixed clock.
 - Watcher tests run on Windows and create separate scratch keys under
   `HKEY_CURRENT_USER\Software\win-nightlight-test`, named by test and process ID. Drop guards
-  remove each test key. The tests exercise native notifications, external waits, thread exit,
-  deletion, and handle cleanup without changing Night Light.
-- The watcher rustdoc example uses Night Light paths but is marked `no_run`: tests compile it
-  without accessing those keys.
+  remove each test key. Tests cover native notifications, automatic rearming, external waits,
+  decoded snapshots, read failures, deferred reads, thread exit, deletion, and handle cleanup
+  without changing Night Light.
+- The watcher rustdoc example uses Night Light constructors but is marked `no_run`: tests compile
+  it without accessing those keys.
