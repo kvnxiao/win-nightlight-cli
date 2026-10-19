@@ -221,15 +221,15 @@ To see how fast the lead grows, record it after each change: the stored timestam
   starting from the timestamp it read when the user pressed the slider. It writes about every 60 ms
   during a drag, so an application that writes more often keeps the stored timestamp ahead of those
   writes. Windows ignores nearly all of the slider's writes. In the probe, against a fade of 30
-  writes per second, 68 of 68 slider writes in one run and 113 of 126 in another were stamped at or
-  below the highest timestamp. The observer saw the fade continue, and the screen rarely showed the
-  slider's temperature, each time for a few frames.
+  writes per second, 181 of 194 slider writes in two runs were stamped at or below the highest
+  timestamp. The observer saw the fade continue, and the screen rarely showed the slider's
+  temperature, each time for a few frames.
 - **Effect on the fade:** each slider write stores a timestamp below the fade's latest write. The
   handle stamps the fade's next write at least 2 s after the highest timestamp it has written, so
   that write is stamped above the slider's write and above the highest timestamp `explorer.exe`
   has applied. The two probe runs used an earlier library build that stamped 2 s after the stored
-  timestamp. In them, 80 and 137 fade writes after a slider write were stamped at or below the
-  highest timestamp `explorer.exe` had applied.
+  timestamp. In them, 217 fade writes after a slider write were stamped at or below the highest
+  timestamp `explorer.exe` had applied.
 - **When the user releases the slider:** Windows Settings usually turns preview off. The next
   `preview_color_temperature` call then returns `false` and turns preview back on, so the fade
   continues. In one probe run, Windows Settings did not turn preview off on release, so the

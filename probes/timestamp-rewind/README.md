@@ -135,12 +135,19 @@ hyphenated names in code font, such as `revert-window`, are cases from [Cases](#
 about what `explorer.exe` keeps in memory are inferences from its behavior and from Process Monitor
 traces.
 
-### 1. The `Cloud` timestamp changes only after Windows Settings writes
+### 1. The `Cloud` timestamp changes after Windows Settings writes, never after library writes
 
-- `Cloud` is a 13-byte record with only a timestamp.
-- `explorer.exe` writes it with the same timestamp 44–62 ms after each settings write by Windows
-  Settings (`SystemSettings.exe`): 34 of 34 writes in the suite traces. It never wrote `Cloud`
-  after a library write.
+- `Cloud` is a 13-byte record with only a timestamp. The state value has a `Cloud` record with the
+  same layout.
+- `explorer.exe` wrote the settings' `Cloud` record 266 times in the traces. In 265 of them, it
+  wrote the timestamp of a settings write by Windows Settings (`SystemSettings.exe`), 44–63 ms after
+  that write. Once, a restarted `explorer.exe` wrote the settings itself at startup, stamped 2 s
+  after the stored timestamp, and wrote that timestamp to `Cloud` 3.3 s later. `explorer.exe` never
+  wrote `Cloud` after a library write.
+- After each of the 10 restarts in `plain-write`, whose trace records the state timestamps, the new
+  `explorer.exe` wrote the state value, stamped with the later of real time and 2 s after the stored
+  state timestamp. Then, 3.1–4.0 s later, it wrote that timestamp to the state's `Cloud` record. The
+  probe's 20 state writes in that run did not change the state's `Cloud` record.
 - Windows Settings stamps each write 2 s after the last timestamp it read or wrote: the stored
   timestamp, which it reads when the slider is pressed, then the timestamp of its own previous write
   ([finding 15](#15-while-a-fade-writes-faster-than-windows-settings-windows-ignores-the-slider)). A
@@ -154,10 +161,11 @@ traces.
   Windows Settings write.
 - `explorer.exe` always reverts. `ShellHost.exe` also reverts once it has started reading the
   settings ([finding 11](#11-shellhostexe-reads-the-settings-only-after-quick-settings-opens)).
-- Each process usually reverts 2–4 ms after the write. Over 195 reverted writes in the suite's
-  `revert-window` run, the median delay was 3.4 ms for `explorer.exe` and 2.6 ms for
-  `ShellHost.exe`. In 31 of 195 writes for `explorer.exe`, and 10 of 195 for `ShellHost.exe`, the
-  revert came 42–67 ms after the write.
+- Each process usually reverts 2–4 ms after the write. Of the 210 writes below `Cloud` in the
+  `revert-window` run, each process reverted 195; the other 15 were the 0 ms rounds in the table
+  below. The median delay was 3.4 ms for `explorer.exe` and 2.6 ms for `ShellHost.exe`. The revert
+  came 42–67 ms after the write for 31 of the 195 writes for `explorer.exe` and for 10 of the 195
+  for `ShellHost.exe`.
 - A revert overwrites any write made between the write below `Cloud` and the revert. In
   `revert-window`, ordinary refreshes sent after a write below `Cloud` were lost as follows, out of
   15 at each delay:
@@ -176,19 +184,21 @@ traces.
 ### 3. A rewind at or above `Cloud` stays in the registry and causes a stale-timestamp block
 
 - Windows kept every rewind to the later of real time and `Cloud`.
-- After the rewind, `explorer.exe` ignored ordinary refreshes stamped at or below the maximum: 52 of
-  53 checks across all runs, and 14 of 14 in the suite. The exception was a check in an early trial:
-  after a refresh below the maximum, the observer reported that the screen was not deep red, the
-  tint it keeps if the refresh is ignored. The case skipped the rest of that trial.
-- A refresh stamped above the maximum applied every time.
+- After the rewind, `explorer.exe` ignored ordinary refreshes stamped at or below the maximum in 62
+  of 63 checks. The exception was a check in an early trial: after a refresh below the maximum, the
+  observer reported that the screen was not deep red, the tint it keeps if the refresh is ignored.
+  The case skipped the rest of that trial.
+- A refresh stamped above the maximum applied in 7 of 7 checks. In the state described in finding
+  12, writes stamped above every earlier maximum were ignored too.
 - Setting `Cloud` and the settings timestamp to real time together still causes a stale-timestamp
-  block (`reset-both`). Lowering `Cloud` alone does not affect refreshes (`lower-cloud`).
+  block (`reset-both`, 1 run). Lowering `Cloud` alone does not affect refreshes (`lower-cloud`, 1
+  run).
 
 ### 4. A write below `Cloud`, which Windows reverts, releases a stale-timestamp block
 
 After a write below `Cloud` and its revert, ordinary refreshes 1,000–3,000 s below the old maximum
-applied in 7 of 7 runs: three `revert-after-rewind` runs and four `reverts-while-off` runs. In the
-first `reverts-while-off` run the evidence is indirect: switching Night Light on showed the tint of
+applied in 7 of 7 runs of `revert-after-rewind` and `reverts-while-off`. In the first
+`reverts-while-off` run the evidence is indirect: switching Night Light on showed the tint of
 a refresh 1,025 s below the maximum. Because switching on during a stale-timestamp block shows the
 last tint applied ([finding
 8](#8-switching-night-light-off-and-on-releases-neither-the-stale-timestamp-block-nor-the-restart-block)),
@@ -208,15 +218,16 @@ writes that released a stale-timestamp block in every run. Its costs:
 - For an ordinary refresh, `explorer.exe` reads only the preview-off value, because preview turns
   off about 0.2 ms after it turns on.
 - The following counts include only trials in which the observer first confirmed the stale-timestamp
-  block. A 0/0 preview refresh makes its three writes within about 0.5 ms. It released the block in
-  13 of 15 trials, and 5 of 5 in the suite. All other timings, including holds of 100 ms to 2 s in
-  an earlier version of the case, released it in 2 of 24 trials. None of the 10 trials with a 50 ms
-  gap released it. A preview held for 2–3 s released it in one of two runs
-  (`held-preview-after-rewind`).
-- Process Monitor traced 28 trials with a stale-timestamp block. In the 12 that released the
-  block, `explorer.exe` read a preview-on value and then its next value 0.4–0.7 ms later. In the 16
-  that did not, the next read came about 50 ms later, or `explorer.exe` did not read a preview-on
-  value.
+  block. A 0/0 preview refresh makes its three writes within 1 ms: 0.2–0.7 ms apart in the traces.
+  It released the block in 13 of 15 trials, which include 2 trials with no hold in an earlier
+  version of the case. All other timings, including holds of 100 ms to 2 s in that earlier version,
+  released it in 2 of 24 trials. None of the 10 trials with a 50 ms gap released it. In two
+  `held-preview-after-rewind` runs, a preview held for about 1.9 s released it, and a preview held
+  for about 2.9 s did not.
+- Process Monitor traced 28 trials with a stale-timestamp block, in summaries that record value
+  lengths. In the 12 that released the block, `explorer.exe` read a preview-on value and then its
+  next value 0.4–0.7 ms later. In the 16 that did not, the next read came about 50 ms later, or
+  `explorer.exe` did not read a preview-on value.
 - A writer cannot detect which values `explorer.exe` read. A failed attempt does not release the
   block, but it leaves the registry in the same state as a successful one. A writer therefore cannot
   rely on a 0/0 preview refresh to release a stale-timestamp block.
@@ -226,30 +237,31 @@ writes that released a stale-timestamp block in every run. Its costs:
 - A restarted `explorer.exe` applies the stored temperature at startup, even when its timestamp is
   below the old maximum: 5 of 5 runs (`stale-timestamp-survives-restart`,
   `explorer-restart-after-rewind`).
-- After a preview refresh releases the restart block, ordinary refreshes stamped 49 s to about
-  6,000 s below the old maximum applied in 4 of 4 runs.
+- After a preview refresh or a held preview releases the restart block, ordinary refreshes stamped
+  49 s to about 6,000 s below the old maximum applied in 4 of 4 runs.
 
 ### 7. Every `explorer.exe` restart blocks ordinary refreshes
 
-- After each restart, `explorer.exe` ignored ordinary refreshes whatever their timestamp: 31 of 31
-  checks across all runs. Signing out and back in does not cause the block: ordinary refreshes
-  applied in the runs after the sign-out in finding 12.
+- After each restart, `explorer.exe` ignored ordinary refreshes whatever their timestamp: 35 of 35
+  checks. Signing out and back in does not cause the block: ordinary refreshes applied in the runs
+  after the sign-out in finding 12.
 - Opening the Night Light page in Windows Settings did not release the block (2 runs). A slider
   write released it (3 runs).
 - A preview refresh releases the block when preview stays on long enough. Process Monitor traced
-  20 trials. The block was released in all 15 in which `explorer.exe` read preview on and preview
-  off at least 12.6 ms apart, and in none of the 5 in which the two reads were at most 8.2 ms
-  apart.
+  20 trials, in summaries that record value lengths. The block was released in all 15 in which
+  `explorer.exe`'s first read of a preview-on value and its read of the preview-off value were at
+  least 12.6 ms apart, and in none of the 5 in which the two reads were at most 8.2 ms apart.
 - By the probe's own clock, from its preview-on write to its preview-off write, previews kept on
   for 8.6 ms or longer released the block, and previews kept on for 7.0 ms or less did not.
   Keeping preview on for about 9 ms or longer therefore released the block in these measurements.
-- Previews held for several seconds released the block in 4 of 4 runs. Ordinary refreshes applied
+- Previews held for 1.7 to 4.6 s released the block in 4 of 4 runs. Ordinary refreshes applied
   after each release.
 - An ordinary refresh turns preview off about 0.2 ms after turning it on, so it cannot release the
   block.
-- No preview timing released both blocks. In the traced trials, a stale-timestamp block was
-  released only when `explorer.exe` read the next value within 0.7 ms of a preview-on value, and a
-  restart block only when the two reads were more than 8.2 ms apart.
+- No preview timing reliably released both blocks. A 0/50 preview refresh released the restart
+  block in 3 of 3 traced trials but a stale-timestamp block in only 1 trial. In the traced trials, a
+  stale-timestamp block was released only when `explorer.exe` read the next value within 0.7 ms of
+  a preview-on value, and a restart block only when the two reads were more than 8.2 ms apart.
 
 ### 8. Switching Night Light off and on releases neither the stale-timestamp block nor the restart block
 
@@ -273,10 +285,10 @@ An ordinary refresh after a `ShellHost.exe` restart applied in 3 of 3 runs.
 
 A newly started `ShellHost.exe` did not read the settings or revert writes until Quick Settings
 opened. From then on, it read every change and reverted writes below `Cloud`, even after Quick
-Settings closed. This held in 3 traced `quick-settings-reader` runs and in suite parts 1 and 4,
-where the observer opened Windows Settings through Quick Settings. Windows also ended and relaunched
-`ShellHost.exe` once during a run without logging a crash. The new process did not read the
-settings.
+Settings closed. This held in the 5 traces that show `ShellHost.exe` start reading the settings,
+including 2 in which the observer opened Windows Settings through Quick Settings. Windows also ended
+and relaunched `ShellHost.exe` twice during runs. Neither new process read the settings. For the
+first relaunch, the Windows Application log shows no crash.
 
 ### 12. In one run, the display ignored settings writes until a sign-out, for an unknown reason
 
@@ -297,14 +309,15 @@ conditions:
 - A sweep.
 - Two writes below `Cloud` that Windows reverted, the second with Night Light off.
 - After each revert, the probe wrote back the settings and on/off state from the start of the run.
-  `Cloud` was about 340 s ahead of real time, and each revert set the settings timestamp to
-  `Cloud`, so the write after the first revert and the write after the second revert had the same
-  timestamp.
+  `Cloud` was about 310 s ahead of real time at the reverts, and each revert set the settings
+  timestamp to `Cloud`, so the write after the first revert and the write after the second revert
+  had the same timestamp.
 - The third run started 12 minutes after the second ended.
 
 Four replays did not reproduce the state:
 
-- Two `reverts-while-off` runs repeated a burst and the two reverts with Night Light off.
+- Two `reverts-while-off` runs repeated a burst and the two reverts, the second with Night Light
+  off.
 - Two `reverts-while-off --cloud-ahead` runs also moved `Cloud` 134 s and 439 s ahead of real time,
   so the refresh after the first revert and the refresh after the second revert had the same
   timestamp. They waited up to about 7 minutes before switching on.
@@ -314,8 +327,8 @@ None of the replays made a sweep or repeated the exact writes of the first probe
 ### 13. Fades with preview held on look gradual at 30 to 480 writes per second, including after a restart
 
 - In `drag-fade`, held drags of 1 s and 30 s at 480 writes per second looked gradual and ended on
-  red: 4 of 4 fades, two of them right after an `explorer.exe` restart. Per-step drags 3 s apart
-  changed the screen in visible steps and ended on red: 2 of 2, one after a restart.
+  red in 4 of 4 fades, including right after an `explorer.exe` restart. Per-step drags 3 s apart
+  changed the screen in visible steps and ended on red in 2 of 2 fades, including after a restart.
 - In `drag-rate`, 1-second held drags from neutral to red looked gradual at 30, 60, 144, 240, and
   480 writes per second: 10 of 10 answers, in 2 rounds of random order, without the observer knowing
   the rate. The case did not test rates below 30.
@@ -342,20 +355,23 @@ the observer dragged the Strength slider in Windows Settings:
   the drag. For example, at 22,199 ms into the second run's trace, the probe stored timestamp
   1792458735; 20 ms later, Windows Settings wrote 1792458733.
 - Windows Settings wrote about every 60 ms and the probe every 33 ms, so the stored timestamp stayed
-  ahead of the slider writes. In the second run, 68 of 68 slider writes were stamped at or below the
-  highest earlier timestamp; in the first run, 113 of 126. In the first run, the observer pressed
-  the slider several times. Of the 13 slider writes stamped above the highest timestamp, 9 came
-  after the probe stopped writing, and the other 4 each came right after a press. The observer saw
-  the fade continue, and the screen rarely showed the slider's temperature, each time for a few
-  frames.
+  ahead of the slider writes. In the two runs, 181 of 194 slider writes were stamped at or below the
+  highest earlier timestamp. In the first run, the observer pressed the slider several times. Of the
+  13 slider writes stamped above the highest timestamp, 9 came after the probe stopped writing, and
+  the other 4 each came right after a press. The observer saw the fade continue, and the screen
+  rarely showed the slider's temperature, each time for a few frames.
 - A slider write stores a timestamp up to 8 s below the highest one. Each probe write after it is
   stamped 2 s higher than the stored timestamp, so the next one to four probe writes were also
-  stamped at or below the highest earlier timestamp: 80 probe writes in the second run and 137 in
-  the first. Windows presumably ignored these writes too; the probe writes after them were stamped
-  above the highest timestamp, and the fade continued.
-- In the first run, 25 probe writes were made while preview was off, because a slider write had
-  turned it off, and each of them turned preview back on. In the second run, every slider write had
-  preview on, and no probe write was made while preview was off.
+  stamped at or below the highest earlier timestamp: 217 probe writes in the two runs. Windows
+  presumably ignored these writes too; the probe writes after them were stamped above the highest
+  timestamp, and the fade continued.
+- In the first run, Windows Settings wrote preview off 31 times as the observer pressed and
+  released the slider. 25 probe writes were made while preview was off, and each of them turned
+  preview back on.
+- In the second run, the observer pressed, dragged, and released the slider once. Windows Settings
+  made 68 writes, all with preview on, and made no other write to the Night Light values, failed or
+  successful: releasing the slider did not turn preview off. The probe did not determine why. No
+  probe write was made while preview was off.
 - In the second run, a per-step drag to yellow after the fade applied. In the first run, the
   observer was still dragging at that point. The 9 slider writes made after the probe stopped
   writing were stamped above the stored timestamp, and the screen showed the slider's temperature.
@@ -510,8 +526,8 @@ red refreshes, or when the observer types `quit`. It then prints the `--from` st
 ### Changes a run leaves behind
 
 - Each case changes the temperature and the on/off state, then restores both. Restoring writes a
-  settings timestamp above every timestamp the case saw, so cases with a burst leave the lead about
-  1,000 s larger. Parts 1 to 4 leave a lead of about 6,000 s.
+  settings timestamp above every timestamp the case saw, so a case with a 256-refresh burst leaves
+  the lead about 1,000 s larger, less any time it waits. Parts 1 to 4 leave a lead of about 6,000 s.
 - Each write of a held drag advances the settings timestamp by 2 s. On a 480 Hz display, `drag-fade`
   leaves a lead of about 17 hours and `drag-rate` about 1 hour. `drag-interference` writes 30 times
   per second on any display and leaves about 30 minutes. Windows still applies each later library
@@ -577,8 +593,9 @@ and dependency audit tasks, which CI also runs. `just trace-fix` applies lint fi
 ### Suite run on 2026-10-19
 
 Parts 1 to 4 ran on 2026-10-19 from 02:10 to 02:28 UTC. Of 134 answers, 115 named the tint the
-question checked for. All 19 others answered questions that check whether a refresh applied, where
-a finding predicts the refresh is ignored, and each named the tint already on screen.
+question checked for. Each of the 19 others came from a step during a stale-timestamp block or a
+restart block and named the tint the display had last applied. These questions asked whether a
+refresh or a held preview applied, or which tint switching Night Light on showed.
 
 Parts 5 and 6 ran from 06:57 to 07:21 UTC, with a second `drag-interference` run at 07:10. Of 93
 answers about a tint, 72 named the tint the question checked for:
@@ -610,8 +627,8 @@ file names the build and display.
   run 4 followed the sign-out.
 - 2026-10-18 23:33 UTC to 2026-10-19 01:58 UTC: exploratory runs of the current cases and their
   earlier versions. Their questions named the tint they checked for and took yes or no. Four of
-  these runs came from an earlier version of `preview-timing` that varied only the hold, and three
-  of those four stopped before their first measurement.
+  these runs came from an earlier version of `preview-timing` that varied only the hold. Five other
+  runs ended before their first measurement.
 
 ## Test machine
 
@@ -637,10 +654,15 @@ fields:
     the highest timestamp during a fade were ignored (finding 15).
   - Held drags at fewer than 30 writes per second.
   - A slider drag during a fade whose steps are seconds apart, such as a ramp.
+  - Whether `explorer.exe` ignores state writes stamped at or below the highest state timestamp it
+    has applied, and whether Windows reverts state writes stamped below the state's `Cloud`
+    timestamp.
   - Preview timings between 1 and 50 ms during a stale-timestamp block.
   - Whether an `explorer.exe` that Windows restarts after a crash blocks refreshes as a restart by
     the probe does.
   - Whether system load changes the revert delays.
+- In one `drag-interference` run, releasing the slider did not turn preview off (finding 15). The
+  probe did not determine why.
 - Finding 12 is unexplained. The replays did not include the first probe version's sweep of
   changing temperatures at 144 Hz.
 - Process Monitor deleted some early capture files, for an unknown reason. The trace recipe renames
