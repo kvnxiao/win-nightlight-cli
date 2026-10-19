@@ -24,7 +24,7 @@ use win_nightlight_lib::ColorTemperature;
 
 // Each trial writes about ten seconds of timestamps after its rewind, and all
 // of them must stay below the highest timestamp the display applied.
-const FREEZE_GAP_SECS: u64 = 60;
+const REWIND_GAP_SECS: u64 = 60;
 // Each pair is the time between turning preview on and changing the
 // temperature, then the time between that change and turning preview off.
 const PREVIEW_TIMINGS_MS: [(u64, u64); 4] = [(0, 0), (0, 50), (50, 0), (50, 50)];
@@ -39,7 +39,7 @@ pub(crate) enum Blocker {
     /// Nothing; ordinary refreshes apply.
     None,
     /// A rewind below the highest timestamp the display applied.
-    Freeze,
+    StaleTimestamp,
     /// An explorer.exe restart.
     ExplorerRestart,
 }
@@ -74,17 +74,17 @@ fn block_refreshes(session: &mut Session, blocker: Blocker) -> anyhow::Result<bo
         Blocker::None => {
             session.refresh(Tint::Red, "block")?;
         }
-        Blocker::Freeze => {
+        Blocker::StaleTimestamp => {
             let floor = unix_secs(SystemTime::now())?.max(registry::read_cloud_modified()?);
-            // The red refresh must apply even when an earlier trial left the
-            // display frozen, so it is stamped above every timestamp the
+            // The red refresh must apply even when an earlier trial left a
+            // stale-timestamp block, so it is stamped above every timestamp the
             // session has seen.
             let above_seen = session
                 .highest_modified()
                 .checked_add(1)
                 .context("settings timestamp overflows")?;
             let above_floor = floor
-                .checked_add(FREEZE_GAP_SECS)
+                .checked_add(REWIND_GAP_SECS)
                 .context("settings timestamp overflows")?;
             registry::write_settings_modified(above_seen.max(above_floor))?;
             session.refresh(Tint::Red, "block")?;
@@ -248,13 +248,14 @@ pub(crate) fn switch_release(session: &mut Session, blocker: Blocker) -> anyhow:
 /// Check whether the highest timestamp the display applied before an
 /// `explorer.exe` restart still blocks refreshes after it.
 ///
-/// A preview refresh releases a restart block but not a freeze, so a preview
-/// refresh that applies after the restart shows that the freeze did not
-/// survive. An ordinary refresh below the old maximum then confirms it.
-pub(crate) fn freeze_survives_restart(session: &mut Session) -> anyhow::Result<()> {
+/// A preview refresh releases a restart block but not a stale-timestamp block,
+/// so a preview refresh that applies after the restart shows that the
+/// stale-timestamp block did not survive. An ordinary refresh below the old
+/// maximum then confirms it.
+pub(crate) fn stale_timestamp_survives_restart(session: &mut Session) -> anyhow::Result<()> {
     session.require_working_display()?;
     ensure!(
-        block_refreshes(session, Blocker::Freeze)?,
+        block_refreshes(session, Blocker::StaleTimestamp)?,
         BLOCK_NOT_CONFIRMED
     );
     let peak = session.highest_modified();

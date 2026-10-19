@@ -22,11 +22,12 @@ const RESET_BURST: u32 = 64;
 const CLOUD_LOWERING_SECS: u64 = 600;
 const CONTRAST_THRESHOLD_KELVIN: i16 = 3800;
 
-/// Advance the timestamp with a visible burst, then rewind it to the later of
-/// real time and `Cloud`, which Windows keeps.
+/// Advance the timestamp with a visible burst, rewind it to the later of real
+/// time and `Cloud`, which Windows keeps, then make a red ordinary refresh
+/// below the burst peak and ask whether it applied.
 ///
 /// Returns the burst's highest timestamp.
-fn freeze_display(session: &mut Session, burst: u32) -> anyhow::Result<u64> {
+fn burst_and_rewind(session: &mut Session, burst: u32) -> anyhow::Result<u64> {
     session.require_working_display()?;
     let peak = session.burst(Tint::Yellow, burst)?;
     ensure!(
@@ -83,15 +84,15 @@ pub(super) fn revert_below_cloud(session: &mut Session) -> anyhow::Result<Snapsh
 
 /// Check whether the display follows refreshes stamped below the timestamp
 /// it applied before a rewind, and above it.
-pub(crate) fn freeze(session: &mut Session, burst: u32) -> anyhow::Result<()> {
-    let peak = freeze_display(session, burst)?;
+pub(crate) fn stale_timestamp(session: &mut Session, burst: u32) -> anyhow::Result<()> {
+    let peak = burst_and_rewind(session, burst)?;
     refresh_above(session, peak, Tint::Neutral)?;
     Ok(())
 }
 
-/// Check whether a reverted write releases a frozen display.
-pub(crate) fn revert_after_freeze(session: &mut Session, burst: u32) -> anyhow::Result<()> {
-    let peak = freeze_display(session, burst)?;
+/// Check whether a reverted write releases a stale-timestamp block.
+pub(crate) fn revert_after_rewind(session: &mut Session, burst: u32) -> anyhow::Result<()> {
+    let peak = burst_and_rewind(session, burst)?;
     let reverted = revert_below_cloud(session)?;
     // The revert restores the last Windows Settings temperature, which the
     // display may apply, so the check refreshes to a contrasting tint.
@@ -112,19 +113,19 @@ pub(crate) fn revert_after_freeze(session: &mut Session, burst: u32) -> anyhow::
     Ok(())
 }
 
-/// Check whether a held-preview refresh releases a display that a rewind
-/// froze before `explorer.exe` restarted.
+/// Check whether a held-preview refresh releases a stale-timestamp block that
+/// a rewind caused before `explorer.exe` restarted.
 ///
 /// An `explorer.exe` restart alone blocks ordinary refreshes, so the case
 /// cannot tell whether the new process keeps the highest timestamp applied
 /// before the restart. If the ordinary refresh after the held-preview refresh
 /// is ignored, a refresh above the burst peak shows whether updates resumed
 /// at all.
-pub(crate) fn explorer_restart_after_freeze(
+pub(crate) fn explorer_restart_after_rewind(
     session: &mut Session,
     burst: u32,
 ) -> anyhow::Result<()> {
-    let peak = freeze_display(session, burst)?;
+    let peak = burst_and_rewind(session, burst)?;
     restart_shell(session, ShellProcess::Explorer)?;
     // The stored temperature is the ignored red refresh, and the screen still
     // shows the yellow burst unless the new explorer.exe applies it.
@@ -329,10 +330,11 @@ pub(crate) fn held_preview_after_explorer_restart(session: &mut Session) -> anyh
     Ok(())
 }
 
-/// Check whether a refresh that holds preview on applies during a freeze, and
-/// whether ordinary refreshes below the burst peak apply after it.
-pub(crate) fn held_preview_during_freeze(session: &mut Session, burst: u32) -> anyhow::Result<()> {
-    let peak = freeze_display(session, burst)?;
+/// Check whether a refresh that holds preview on applies during a
+/// stale-timestamp block, and whether ordinary refreshes below the burst peak
+/// apply after it.
+pub(crate) fn held_preview_after_rewind(session: &mut Session, burst: u32) -> anyhow::Result<()> {
+    let peak = burst_and_rewind(session, burst)?;
     // The screen shows yellow from the burst; the red refresh was ignored.
     let held_kept = held_preview_refresh(session, Tint::Neutral)?;
     // Red differs from neutral, if the held refresh applied, and from yellow,

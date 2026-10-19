@@ -222,12 +222,12 @@ impl Session {
     /// a preview, which also applies after an `explorer.exe` restart, and the
     /// original on/off state.
     pub(crate) fn restore(&mut self) -> anyhow::Result<()> {
-        let unfreeze = self
+        let above_every_seen = self
             .highest_modified
             .max(registry::read_cloud_modified()?)
             .checked_add(1)
             .context("settings timestamp overflows")?;
-        registry::write_settings_modified(unfreeze)?;
+        registry::write_settings_modified(above_every_seen)?;
         if let Some(kelvin) = self
             .original_kelvin
             .and_then(|kelvin| u16::try_from(kelvin).ok())

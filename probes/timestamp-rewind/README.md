@@ -3,8 +3,8 @@
 This probe measures when Windows applies Night Light settings writes to the display after a program
 moves the settings timestamp backward, and what else makes Windows ignore a temperature change. It
 changes live Night Light settings and needs an observer at the display, who reports which tint the
-screen shows. It runs only through this directory's `justfile`. Workspace tasks build the probe and
-run its unit tests, but no test or CI job runs it.
+screen shows. It runs only through this directory's `justfile`. The repository's root `justfile`
+recipes build the probe and run its unit tests, but no test or CI job runs its cases.
 
 ## Summary
 
@@ -15,19 +15,19 @@ probe started from the question of whether moving the timestamp back to real tim
 
 It does not. `explorer.exe`, the Windows process that applies Night Light to the display, ignores
 temperature changes stamped at or below the highest timestamp it has applied. After the timestamp
-moves back, the display stops changing until new timestamps pass that old maximum, which for a lead
-of hours takes hours. One sequence of registry writes cleared the maximum in every run: a write
-stamped below the timestamp of the latest Windows Settings write. Windows replaces such a write
-within milliseconds, and the replacement also cleared the maximum. This method has costs. Once,
-after it, the display ignored every settings write until a sign-out, for an unexplained reason
-(finding 12).
+moves back, the display stops changing until a temperature change is stamped above that old
+maximum. For a program whose timestamps follow real time, a lead of hours means hours without
+display changes. One method cleared the maximum in every run: a settings write stamped below the
+timestamp of the latest Windows Settings write, which Windows replaces within milliseconds with that
+Windows Settings write. This method has costs. Once, after it, the display ignored every settings
+write until a sign-out, for an unexplained reason (finding 12).
 
 Separately, after the probe ended `explorer.exe` and started a new one, Windows ignored the
 library's temperature changes, whatever their timestamp. They applied again after Windows Settings
 wrote the settings, or after a program kept the settings' preview flag on for about 9 ms or longer.
 
 On 2026-10-19, a suite run repeated every case. Its questions listed all three tints instead of
-naming the one the step checked for, and its results matched the earlier runs.
+naming the one each question checked for, and its results matched the earlier runs.
 
 ## Terms
 
@@ -50,8 +50,9 @@ naming the one the step checked for, and its results matched the earlier runs.
     temperature, waits `gap` ms, writes the new temperature with preview still on, waits `hold` ms,
     and turns preview off. The probe restores the original temperature with a 50/50 preview
     refresh.
-- **Lead:** how far the settings timestamp is ahead of real time. An application that refreshes at
-  the display rate builds a lead of hours per day.
+- **Lead:** how far the settings timestamp is ahead of real time. Each ordinary refresh advances the
+  timestamp by at least 4 s, so refreshes made more often than once per 4 s build a lead: a
+  1-second transition of refreshes at 144 Hz adds about 10 minutes.
 - **Tints:** the three temperatures the probe writes, which an observer can tell apart at a glance:
   neutral (6500 K), yellow (3400 K), and deep red (1200 K).
 - **Burst:** a series of ordinary refreshes to one tint, made back to back to build a lead. Cases
@@ -66,18 +67,21 @@ naming the one the step checked for, and its results matched the earlier runs.
   burst, it is the timestamp of the burst's last refresh.
 - **Revert:** Windows replacing a settings write that is stamped below `Cloud` with the last
   Windows Settings write.
-- **Freeze:** the state after a rewind in which `explorer.exe` ignores ordinary refreshes stamped at
-  or below the maximum.
+- **Stale-timestamp block:** the state after a rewind in which `explorer.exe` ignores ordinary
+  refreshes stamped at or below the maximum.
 - **Restart:** the probe ends `explorer.exe` with `taskkill /F` and starts a new `explorer.exe`.
 - **Restart block:** the state after a restart in which `explorer.exe` ignores ordinary refreshes
   whatever their timestamp.
-- **Block and release:** a block is a freeze or a restart block. A release is an event after which
-  ordinary refreshes apply again.
+- **Block and release:** a block is a stale-timestamp block or a restart block. A release is an
+  event after which ordinary refreshes apply again.
 - **`ShellHost.exe`:** the Windows process that shows Quick Settings, the panel that Windows+A
   opens.
-- **Case, suite, and part:** a case is one scenario the probe runs, started with `just <case>`;
-  [Cases](#cases) lists them. The suite runs every case in four parts, one `just suite <part>`
-  command per part.
+- **Slider write:** the settings writes that Windows Settings makes when the observer drags the
+  Night Light Strength slider and releases it.
+- **Case, suite, part, and step:** a case is one scenario the probe runs, started with
+  `just <case>`; [Cases](#cases) lists them. The suite runs every case in four parts, one
+  `just suite <part>` command per part. Each part runs its cases as numbered steps; step 2.1 is the
+  first step of part 2.
 - **Run, trial, and check:** a run is one execution of a case, which writes one results file. A
   trial is one repetition of a measured sequence inside a run, such as one preview timing. A check
   is one observer answer about whether a refresh applied.
@@ -91,7 +95,7 @@ them). The repository does not include the results files or traces of these runs
 in code font, such as `revert-window`, are cases from [Cases](#cases). Statements about what
 `explorer.exe` keeps in memory are inferences from its behavior and from Process Monitor traces.
 
-### 1. Only Windows Settings writes update the `Cloud` timestamp
+### 1. The `Cloud` timestamp changes only after Windows Settings writes
 
 - `Cloud` is a 13-byte record with only a timestamp.
 - `explorer.exe` writes it with the same timestamp 44–62 ms after each settings write by Windows
@@ -126,25 +130,28 @@ in code font, such as `revert-window`, are cases from [Cases](#cases). Statement
   At 0 ms, both processes read the refresh before reacting to the write below `Cloud`, so neither
   reverted.
 
-### 3. A rewind at or above `Cloud` stays in the registry but freezes the display
+### 3. A rewind at or above `Cloud` stays in the registry and causes a stale-timestamp block
 
 - Windows kept every rewind to the later of real time and `Cloud`.
 - After the rewind, `explorer.exe` ignored ordinary refreshes stamped at or below the maximum:
-  52 of 53 checks across all runs, and 14 of 14 in the suite. The exception was an early trial.
-  After a refresh below the maximum, the observer reported that the screen was not deep red, the
-  tint it keeps if the refresh is ignored, so the case skipped that trial.
+  52 of 53 checks across all runs, and 14 of 14 in the suite. The exception was an early trial:
+  after a refresh below the maximum, the observer reported that the screen was not deep red, the
+  tint it keeps if the refresh is ignored. That check is the one exception, and the case skipped
+  the rest of that trial.
 - A refresh stamped above the maximum applied every time.
-- Setting `Cloud` and the settings timestamp to real time together still freezes the display
-  (`reset-both`). Lowering `Cloud` alone does not affect refreshes (`lower-cloud`).
+- Setting `Cloud` and the settings timestamp to real time together still causes a stale-timestamp
+  block (`reset-both`). Lowering `Cloud` alone does not affect refreshes (`lower-cloud`).
 
-### 4. A write below `Cloud` releases a freeze
+### 4. A write below `Cloud`, which Windows reverts, releases a stale-timestamp block
 
 After a write below `Cloud` and its revert, ordinary refreshes 1,000–3,000 s below the old maximum
-applied in 7 of 7 runs: three `revert-after-freeze` runs and four `reverts-while-off` runs. In the
+applied in 7 of 7 runs: three `revert-after-rewind` runs and four `reverts-while-off` runs. In the
 first `reverts-while-off` run the evidence is indirect. Switching Night Light on showed the tint of
-a refresh 1,025 s below the maximum, and switching on during a freeze shows the last tint applied
-([finding 8](#8-switching-night-light-off-and-on-releases-neither-the-freeze-nor-the-restart-block)).
-It is the only sequence of registry writes that released a freeze in every run. Its costs:
+a refresh 1,025 s below the maximum, and switching on during a stale-timestamp block shows the last
+tint applied
+([finding 8](#8-switching-night-light-off-and-on-releases-neither-the-stale-timestamp-block-nor-the-restart-block)).
+It is the only sequence of registry writes that released a stale-timestamp block in every run. Its
+costs:
 
 - The display shows the last Windows Settings temperature from the revert until the next refresh.
 - A late revert can overwrite writes for up to about 70 ms ([finding 2](#2-windows-reverts-settings-writes-stamped-below-cloud)).
@@ -154,27 +161,29 @@ It is the only sequence of registry writes that released a freeze in every run. 
   ([finding 12](#12-in-one-run-the-display-ignored-settings-writes-until-a-sign-out-for-an-unknown-reason)).
   The cause is unknown.
 
-### 5. A preview refresh releases a freeze only by a race
+### 5. Whether a preview refresh releases a stale-timestamp block depends on when `explorer.exe` reads the settings
 
 - For an ordinary refresh, `explorer.exe` reads only the preview-off value, because preview turns
   off about 0.2 ms after it turns on.
-- These counts include only trials in which the observer first confirmed the freeze. A 0/0 preview
-  refresh makes its three writes within about 0.5 ms. It released the freeze in 13 of 15 trials,
-  and 5 of 5 in the suite. Every other timing, including holds of 100 ms to 2 s in an earlier
-  version of the case, released it in 2 of 24 trials. None of the 10 trials with a 50 ms gap
-  released it. A preview held for 2–3 s released it in one of two runs
-  (`held-preview-during-freeze`).
-- Process Monitor traced 28 freeze trials. In the 12 that released the freeze, `explorer.exe`
-  read a preview-on value and then its next value 0.4–0.7 ms later. In the 16 that did not, the
-  next read came about 50 ms later, or `explorer.exe` did not read a preview-on value.
-- A writer cannot see which values `explorer.exe` read. A failed attempt leaves the display frozen
+- These counts include only trials in which the observer first confirmed the stale-timestamp
+  block. A 0/0 preview refresh makes its three writes within about 0.5 ms. It released the block in
+  13 of 15 trials, and 5 of 5 in the suite. Every other timing, including holds of 100 ms to 2 s in
+  an earlier version of the case, released it in 2 of 24 trials. None of the 10 trials with a
+  50 ms gap released it. A preview held for 2–3 s released it in one of two runs
+  (`held-preview-after-rewind`).
+- Process Monitor traced 28 trials with a stale-timestamp block. In the 12 that released the
+  block, `explorer.exe` read a preview-on value and then its next value 0.4–0.7 ms later. In the 16
+  that did not, the next read came about 50 ms later, or `explorer.exe` did not read a preview-on
+  value.
+- A writer cannot see which values `explorer.exe` read. A failed attempt leaves the block in place
   and the registry in the same state as a successful one, so a writer cannot rely on a 0/0 preview
-  refresh to clear a freeze.
+  refresh to release a stale-timestamp block.
 
-### 6. An `explorer.exe` restart clears a freeze
+### 6. An `explorer.exe` restart ends a stale-timestamp block but causes a restart block
 
 - A restarted `explorer.exe` applies the stored temperature at startup, even when its timestamp is
-  below the old maximum: 5 of 5 runs (`freeze-survives-restart`, `explorer-restart-after-freeze`).
+  below the old maximum: 5 of 5 runs (`stale-timestamp-survives-restart`,
+  `explorer-restart-after-rewind`).
 - After a preview refresh releases the restart block, ordinary refreshes stamped 49 s to about
   6,000 s below the old maximum applied in 4 of 4 runs.
 
@@ -196,23 +205,23 @@ It is the only sequence of registry writes that released a freeze in every run. 
   after each release.
 - An ordinary refresh turns preview off about 0.2 ms after turning it on, so it cannot release the
   block.
-- No preview timing released both blocks. A freeze was released only when `explorer.exe` read the
-  next value within 0.7 ms of a preview-on value. A restart block was released only when the two
-  reads were more than 8.2 ms apart.
+- No preview timing released both blocks. In the traced trials, a stale-timestamp block was
+  released only when `explorer.exe` read the next value within 0.7 ms of a preview-on value, and a
+  restart block only when the two reads were more than 8.2 ms apart.
 
-### 8. Switching Night Light off and on releases neither the freeze nor the restart block
+### 8. Switching Night Light off and on releases neither the stale-timestamp block nor the restart block
 
-- During a freeze, switching on showed the last tint the display applied, not the stored tint, and
-  the next ordinary refresh was ignored (2 runs).
+- During a stale-timestamp block, switching on showed the last tint the display applied, not the
+  stored tint, and the next ordinary refresh was ignored (2 runs).
 - After a restart, switching on showed the stored tint, and the next ordinary refresh was ignored
   (2 runs).
 
-### 9. Every preview timing applies when neither block is in place
+### 9. Without a block, preview refreshes apply with each of the four tested timings
 
-With neither block in place, all four preview timings (0/0, 0/50, 50/0, and 50/50) applied, and
-ordinary refreshes after them applied: 8 of 8 trials in 2 runs. A 50/50 preview refresh therefore
-applies both without a block and after a restart, which is why the probe restores the original
-temperature with one.
+With neither block in place, preview refreshes with all four timings (0/0, 0/50, 50/0, and 50/50)
+applied, and ordinary refreshes after them applied: 8 of 8 trials in 2 runs. A 50/50 preview
+refresh therefore applies both without a block and after a restart, which is why the probe restores
+the original temperature with one.
 
 ### 10. Restarting `ShellHost.exe` does not affect refreshes
 
@@ -247,26 +256,29 @@ conditions:
 - Two writes below `Cloud` that Windows reverted, the second with Night Light off.
 - After each revert, the probe wrote back the settings and on/off state from the start of the run.
   `Cloud` was about 340 s ahead of real time, and each revert set the settings timestamp to
-  `Cloud`, so the writes after both reverts had the same timestamps.
+  `Cloud`, so the write after the first revert and the write after the second revert had the same
+  timestamp.
 - The third run started 12 minutes after the second ended.
 
 Four replays did not reproduce the state:
 
 - Two `reverts-while-off` runs repeated a burst and the two reverts with Night Light off.
 - Two `reverts-while-off --cloud-ahead` runs also moved `Cloud` 134 s and 439 s ahead of real time,
-  so the refreshes after both reverts had the same timestamps, and waited up to about 7 minutes
-  before switching on.
+  so the refresh after the first revert and the refresh after the second revert had the same
+  timestamp. They waited up to about 7 minutes before switching on.
 
 None of the replays made a sweep or repeated the exact writes of the first probe version.
 
 ## What this means for programs that write Night Light settings
 
-- **Resetting a timestamp lead:** a rewind alone freezes the display until real time passes the old
-  maximum, which for a lead of hours means hours of ignored refreshes. A write below `Cloud` cleared
-  the maximum in every run but has the costs in [finding 4](#4-a-write-below-cloud-releases-a-freeze).
-  The probe does not show that it is safe, because the state in finding 12 is unexplained. A
-  rewind followed by a 0/0 preview refresh clears the freeze only when `explorer.exe` reads the
-  values in time (finding 5).
+- **Resetting a timestamp lead:** a rewind alone causes a stale-timestamp block that lasts until a
+  refresh is stamped above the old maximum. For a program whose timestamps follow real time, a lead
+  of hours means hours of ignored refreshes. A write below `Cloud` cleared the maximum in every run
+  but has the costs in
+  [finding 4](#4-a-write-below-cloud-which-windows-reverts-releases-a-stale-timestamp-block). The
+  probe does not show that it is safe, because the state in finding 12 is unexplained. A rewind
+  followed by a 0/0 preview refresh releases the stale-timestamp block only when `explorer.exe`
+  reads the values within about 0.7 ms (finding 5).
 - **Any writer:** keep the settings timestamp increasing, as `max(now, previous + 2)` does. After a
   write that Windows reverts, wait at least 70 ms before the next write.
 - **`win-nightlight-lib` after an `explorer.exe` restart:** ordinary refreshes are ignored until a
@@ -285,13 +297,13 @@ them. The Suite column gives the part and step of the suite that run the case.
 | `revert`                                | Writes the settings 1 s below `Cloud` and records every change to the settings and `Cloud` values in the next second.                                                                                       | 2         | 1.2                |
 | `cloud-boundary`                        | Writes the settings at `Cloud`, then 1 s below it, and records whether each write stays.                                                                                                                    | 2         | 1.3                |
 | `revert-window [passes]`                | Runs 14 delays per pass, 15 passes by default: writes below `Cloud`, waits 0–120 ms, makes an ordinary refresh, and checks whether it survived.                                                             | 2         | 1.4                |
-| `freeze [burst]`                        | Makes a burst, rewinds to the later of real time and `Cloud`, then refreshes below the maximum and above it.                                                                                                | 3         | 2.1                |
-| `revert-after-freeze [burst]`           | Freezes the display as `freeze` does, writes below `Cloud`, then refreshes below the maximum.                                                                                                               | 3, 4      | 1.6                |
-| `held-preview-during-freeze [burst]`    | Freezes the display, holds a preview until the observer answers, then refreshes below the maximum.                                                                                                          | 5         | 2.2                |
-| `preview-timing <blocker> [rounds]`     | Tries the 0/0, 0/50, 50/0, and 50/50 timings in each of `rounds` rounds, 2 by default. Each trial sets up the blocker (`none`, `freeze`, or `explorer-restart`), checks the screen, makes the preview refresh, then an ordinary refresh. `--timing <gap>/<hold>` tries only that timing. | 5, 7, 9   | 2.4, 2.5, 3.1, 3.6 |
+| `stale-timestamp [burst]`               | Makes a burst, rewinds to the later of real time and `Cloud`, then refreshes below the maximum and above it.                                                                                                | 3         | 2.1                |
+| `revert-after-rewind [burst]`           | Causes a stale-timestamp block as `stale-timestamp` does, writes below `Cloud`, then refreshes below the maximum.                                                                                           | 3, 4      | 1.6                |
+| `held-preview-after-rewind [burst]`     | Causes a stale-timestamp block, holds a preview until the observer answers, then refreshes below the maximum.                                                                                               | 5         | 2.2                |
+| `preview-timing <blocker> [rounds]`     | Tries the 0/0, 0/50, 50/0, and 50/50 timings in each of `rounds` rounds, 2 by default. Each trial sets up the blocker (`none`, `stale-timestamp`, or `explorer-restart`), checks the screen, makes the preview refresh, then an ordinary refresh. `--timing <gap>/<hold>` tries only that timing. | 5, 7, 9   | 2.4, 2.5, 3.1, 3.6 |
 | `switch-release <blocker>`              | Blocks refreshes, switches Night Light off and on, then refreshes.                                                                                                                                           | 8         | 2.3, 3.5           |
-| `freeze-survives-restart`               | Freezes the display, restarts `explorer.exe`, makes a 50/50 preview refresh, then refreshes below the old maximum.                                                                                          | 6         | 3.4                |
-| `explorer-restart-after-freeze [burst]` | Freezes the display, restarts `explorer.exe`, refreshes, holds a preview, then refreshes below the old maximum.                                                                                             | 6, 7      | 4.1                |
+| `stale-timestamp-survives-restart`      | Causes a stale-timestamp block, restarts `explorer.exe`, makes a 50/50 preview refresh, then refreshes below the old maximum.                                                                               | 6         | 3.4                |
+| `explorer-restart-after-rewind [burst]` | Causes a stale-timestamp block, restarts `explorer.exe`, refreshes, holds a preview, then refreshes below the old maximum.                                                                                  | 6, 7      | 4.1                |
 | `held-preview-after-explorer-restart`   | Restarts `explorer.exe`, refreshes, holds a preview, then refreshes.                                                                                                                                         | 7         | 4.2                |
 | `restart-explorer`                      | Restarts `explorer.exe` and refreshes. If that refresh is ignored, asks the observer to open the Night Light page and refreshes; if that is ignored too, asks for a slider write and refreshes.             | 7         | 4.5                |
 | `restart-shellhost`                     | Restarts `ShellHost.exe` and refreshes.                                                                                                                                                                      | 10        | 3.3                |
@@ -334,7 +346,7 @@ prints a warning if `seconds` ran out first. `just trace <seconds>` without a ca
 
 ### Answer the probe's questions
 
-Each question lists the tints instead of naming the one the step checks for. Type `1` for neutral
+Each question lists the tints instead of naming the one it checks for. Type `1` for neutral
 (6500 K), `2` for yellow (3400 K), `3` for deep red (1200 K), or `0` for anything else or when
 unsure. The probe discards lines other than `quit` that were typed before a question or instruction
 appeared, so a line typed early does not answer it. Type `quit` to stop: the probe restores Night
@@ -376,9 +388,9 @@ Each case writes `results/<case>-<unix seconds>.jsonl`, one JSON record per line
   probe, and `rustc --version`.
 - Snapshots, such as `start`, `burst`, and `restored`: the settings and `Cloud` timestamps, the
   lead, the temperature, the preview flag, and the `explorer.exe` and `ShellHost.exe` process IDs.
-- `observer`: the step, the tint the step checks for, and the observer's answer. A step that checks
-  a refresh checks for that refresh's tint. A step that checks a block checks for the tint that
-  stays on screen if the block holds.
+- `observer`: the question's label, the tint the question checks for, and the observer's answer. A
+  question about a refresh checks for that refresh's tint. A question about a block checks for the
+  tint that stays on screen if the block holds.
 - Records specific to a case, such as `trial_outcome` or `refresh_after_revert`.
 
 `just trace` writes `traces/trace-<unix seconds>.pml` and its summary `.tsv`. Captures reach about
@@ -408,9 +420,9 @@ and dependency audit tasks, which CI also runs. `just trace-fix` applies lint fi
 
 ### Suite run on 2026-10-19
 
-The suite ran on 2026-10-19 from 02:10 to 02:28 UTC. Of 134 answers, 115 named the tint the step
-checked for. All 19 others came in steps that check whether a refresh applied, where a finding
-predicts the refresh is ignored, and each named the tint already on screen.
+The suite ran on 2026-10-19 from 02:10 to 02:28 UTC. Of 134 answers, 115 named the tint the
+question checked for. All 19 others answered questions that check whether a refresh applied, where
+a finding predicts the refresh is ignored, and each named the tint already on screen.
 
 ### Recheck the findings
 
@@ -429,9 +441,9 @@ of each results file names the build and display.
   that report is treated as misjudged. Run 3 already showed the state in finding 12, and run 4
   followed the sign-out.
 - 2026-10-18 23:33 UTC to 2026-10-19 01:58 UTC: exploratory runs of the current cases and their
-  earlier versions. Their questions named the tint the step checked for and took yes or no. Four
-  runs came from an earlier version of `preview-timing` that varied only the hold, and three
-  stopped before their first measurement.
+  earlier versions. Their questions named the tint they checked for and took yes or no. Four of
+  these runs came from an earlier version of `preview-timing` that varied only the hold, and three
+  of those four stopped before their first measurement.
 
 ## Test machine
 
@@ -446,15 +458,15 @@ fields:
 ## Limits and open questions
 
 - All runs used one machine, one Windows build, one display, and one observer.
-- Windows does not document any of this behavior. The maximum that causes a freeze, the restart
-  block, and the in-memory copies are inferred from what `explorer.exe` applied and from registry
-  traces.
-- Answers are subjective. The suite's questions did not name the tint the step checked for, but the
+- Windows does not document any of this behavior. The maximum that causes a stale-timestamp block,
+  the restart block, and the in-memory copies are inferred from what `explorer.exe` applied and from
+  registry traces.
+- Answers are subjective. The suite's questions did not name the tint they checked for, but the
   earlier runs' questions did.
 - Not tested:
-  - A slider write stamped below the maximum during a freeze. Every slider write observed during a
-    freeze was stamped above it.
-  - Preview timings between 1 and 50 ms during a freeze.
+  - A slider write stamped below the maximum during a stale-timestamp block. Every slider write
+    observed during a stale-timestamp block was stamped above it.
+  - Preview timings between 1 and 50 ms during a stale-timestamp block.
   - Whether an `explorer.exe` that Windows restarts after a crash blocks refreshes as a restart by
     the probe does.
   - Whether system load changes the revert delays.

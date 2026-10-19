@@ -25,7 +25,7 @@ use session::say;
 use std::process::ExitCode;
 use std::time::Duration;
 
-const FREEZE_BURST: u32 = 256;
+const DEFAULT_BURST: u32 = 256;
 // The justfile recipes treat this exit code as success.
 const QUIT_EXIT_CODE: u8 = 3;
 const SUITE_PARTS: u8 = 4;
@@ -40,7 +40,7 @@ const SUITE: [(u8, Case); 22] = [
     (
         1,
         Case::RevertsWhileOff {
-            burst: FREEZE_BURST,
+            burst: DEFAULT_BURST,
             cloud_ahead: true,
         },
     ),
@@ -50,38 +50,38 @@ const SUITE: [(u8, Case); 22] = [
     (
         1,
         Case::RevertsWhileOff {
-            burst: FREEZE_BURST,
+            burst: DEFAULT_BURST,
             cloud_ahead: false,
         },
     ),
     (
         1,
-        Case::RevertAfterFreeze {
-            burst: FREEZE_BURST,
+        Case::RevertAfterRewind {
+            burst: DEFAULT_BURST,
         },
     ),
     (
         2,
-        Case::Freeze {
-            burst: FREEZE_BURST,
+        Case::StaleTimestamp {
+            burst: DEFAULT_BURST,
         },
     ),
     (
         2,
-        Case::HeldPreviewDuringFreeze {
-            burst: FREEZE_BURST,
+        Case::HeldPreviewAfterRewind {
+            burst: DEFAULT_BURST,
         },
     ),
     (
         2,
         Case::SwitchRelease {
-            blocker: Blocker::Freeze,
+            blocker: Blocker::StaleTimestamp,
         },
     ),
     (
         2,
         Case::PreviewTiming {
-            blocker: Blocker::Freeze,
+            blocker: Blocker::StaleTimestamp,
             rounds: 1,
             timing: None,
         },
@@ -89,7 +89,7 @@ const SUITE: [(u8, Case); 22] = [
     (
         2,
         Case::PreviewTiming {
-            blocker: Blocker::Freeze,
+            blocker: Blocker::StaleTimestamp,
             rounds: 4,
             timing: Some((0, 0)),
         },
@@ -104,7 +104,7 @@ const SUITE: [(u8, Case); 22] = [
     ),
     (3, Case::QuickSettingsReader),
     (3, Case::RestartShellhost),
-    (3, Case::FreezeSurvivesRestart),
+    (3, Case::StaleTimestampSurvivesRestart),
     (
         3,
         Case::SwitchRelease {
@@ -121,8 +121,8 @@ const SUITE: [(u8, Case); 22] = [
     ),
     (
         4,
-        Case::ExplorerRestartAfterFreeze {
-            burst: FREEZE_BURST,
+        Case::ExplorerRestartAfterRewind {
+            burst: DEFAULT_BURST,
         },
     ),
     (4, Case::HeldPreviewAfterExplorerRestart),
@@ -161,22 +161,22 @@ enum Case {
     },
     /// Check whether the display follows refreshes after a rewind that Windows
     /// keeps.
-    Freeze {
+    StaleTimestamp {
         /// Refreshes that advance the timestamp before the rewind.
-        #[arg(default_value_t = FREEZE_BURST)]
+        #[arg(default_value_t = DEFAULT_BURST)]
         burst: u32,
     },
-    /// Check whether a reverted write releases a display frozen by a rewind.
-    RevertAfterFreeze {
+    /// Check whether a reverted write releases a stale-timestamp block.
+    RevertAfterRewind {
         /// Refreshes that advance the timestamp before the rewind.
-        #[arg(default_value_t = FREEZE_BURST)]
+        #[arg(default_value_t = DEFAULT_BURST)]
         burst: u32,
     },
-    /// Check whether a held-preview refresh releases a display frozen by a
-    /// rewind after explorer.exe restarts.
-    ExplorerRestartAfterFreeze {
+    /// Check whether a held-preview refresh releases a stale-timestamp block
+    /// after explorer.exe restarts.
+    ExplorerRestartAfterRewind {
         /// Refreshes that advance the timestamp before the rewind.
-        #[arg(default_value_t = FREEZE_BURST)]
+        #[arg(default_value_t = DEFAULT_BURST)]
         burst: u32,
     },
     /// Check whether the display follows refreshes after the Cloud timestamp is
@@ -193,10 +193,11 @@ enum Case {
     /// Check whether a refresh that holds preview on applies after an
     /// explorer.exe restart.
     HeldPreviewAfterExplorerRestart,
-    /// Check whether a refresh that holds preview on applies during a freeze.
-    HeldPreviewDuringFreeze {
+    /// Check whether a refresh that holds preview on applies during a
+    /// stale-timestamp block.
+    HeldPreviewAfterRewind {
         /// Refreshes that advance the timestamp before the rewind.
-        #[arg(default_value_t = FREEZE_BURST)]
+        #[arg(default_value_t = DEFAULT_BURST)]
         burst: u32,
     },
     /// Check which preview timings apply a temperature while ordinary
@@ -219,15 +220,14 @@ enum Case {
         #[arg(value_enum)]
         blocker: Blocker,
     },
-    /// Check whether a freeze still blocks refreshes after explorer.exe
-    /// restarts.
-    FreezeSurvivesRestart,
+    /// Check whether a stale-timestamp block survives an explorer.exe restart.
+    StaleTimestampSurvivesRestart,
     /// Write below Cloud twice, which Windows reverts, with Night Light off,
     /// switch it on, and check whether refreshes below and above the burst
     /// peak apply.
     RevertsWhileOff {
         /// Refreshes that advance the timestamp before the reverts.
-        #[arg(default_value_t = FREEZE_BURST)]
+        #[arg(default_value_t = DEFAULT_BURST)]
         burst: u32,
         /// Move Cloud ahead of real time first, and wait for real time to
         /// pass the stored timestamp before switching on.
@@ -259,17 +259,17 @@ fn run(case: Case, observer: Observer) -> anyhow::Result<()> {
         Case::RevertWindow { passes } => Session::run("revert-window", observer, |session| {
             cases::revert::refresh_window(session, passes)
         }),
-        Case::Freeze { burst } => Session::run("freeze", observer, |session| {
-            cases::display::freeze(session, burst)
+        Case::StaleTimestamp { burst } => Session::run("stale-timestamp", observer, |session| {
+            cases::display::stale_timestamp(session, burst)
         }),
-        Case::RevertAfterFreeze { burst } => {
-            Session::run("revert-after-freeze", observer, |session| {
-                cases::display::revert_after_freeze(session, burst)
+        Case::RevertAfterRewind { burst } => {
+            Session::run("revert-after-rewind", observer, |session| {
+                cases::display::revert_after_rewind(session, burst)
             })
         }
-        Case::ExplorerRestartAfterFreeze { burst } => {
-            Session::run("explorer-restart-after-freeze", observer, |session| {
-                cases::display::explorer_restart_after_freeze(session, burst)
+        Case::ExplorerRestartAfterRewind { burst } => {
+            Session::run("explorer-restart-after-rewind", observer, |session| {
+                cases::display::explorer_restart_after_rewind(session, burst)
             })
         }
         Case::LowerCloud => Session::run("lower-cloud", observer, cases::display::lower_cloud),
@@ -289,9 +289,9 @@ fn run(case: Case, observer: Observer) -> anyhow::Result<()> {
             observer,
             cases::display::held_preview_after_explorer_restart,
         ),
-        Case::HeldPreviewDuringFreeze { burst } => {
-            Session::run("held-preview-during-freeze", observer, |session| {
-                cases::display::held_preview_during_freeze(session, burst)
+        Case::HeldPreviewAfterRewind { burst } => {
+            Session::run("held-preview-after-rewind", observer, |session| {
+                cases::display::held_preview_after_rewind(session, burst)
             })
         }
         Case::PreviewTiming {
@@ -304,10 +304,10 @@ fn run(case: Case, observer: Observer) -> anyhow::Result<()> {
         Case::SwitchRelease { blocker } => Session::run("switch-release", observer, |session| {
             cases::blocks::switch_release(session, blocker)
         }),
-        Case::FreezeSurvivesRestart => Session::run(
-            "freeze-survives-restart",
+        Case::StaleTimestampSurvivesRestart => Session::run(
+            "stale-timestamp-survives-restart",
             observer,
-            cases::blocks::freeze_survives_restart,
+            cases::blocks::stale_timestamp_survives_restart,
         ),
         Case::RevertsWhileOff { burst, cloud_ahead } => {
             Session::run("reverts-while-off", observer, |session| {

@@ -13,11 +13,11 @@ cloud-boundary: (_run "cloud-boundary")
 
 revert-window passes="15": (_run "revert-window" passes)
 
-freeze burst="256": (_run "freeze" burst)
+stale-timestamp burst="256": (_run "stale-timestamp" burst)
 
-revert-after-freeze burst="256": (_run "revert-after-freeze" burst)
+revert-after-rewind burst="256": (_run "revert-after-rewind" burst)
 
-explorer-restart-after-freeze burst="256": (_run "explorer-restart-after-freeze" burst)
+explorer-restart-after-rewind burst="256": (_run "explorer-restart-after-rewind" burst)
 
 lower-cloud: (_run "lower-cloud")
 
@@ -29,14 +29,14 @@ restart-explorer: (_run "restart-explorer")
 
 held-preview-after-explorer-restart: (_run "held-preview-after-explorer-restart")
 
-held-preview-during-freeze burst="256": (_run "held-preview-during-freeze" burst)
+held-preview-after-rewind burst="256": (_run "held-preview-after-rewind" burst)
 
 preview-timing blocker rounds="2" *flags:
     {{probe}} preview-timing {{blocker}} {{rounds}} {{flags}} || [ $? -eq 3 ]
 
 switch-release blocker: (_run "switch-release" blocker)
 
-freeze-survives-restart: (_run "freeze-survives-restart")
+stale-timestamp-survives-restart: (_run "stale-timestamp-survives-restart")
 
 reverts-while-off burst="256" *flags:
     {{probe}} reverts-while-off {{burst}} {{flags}} || [ $? -eq 3 ]
