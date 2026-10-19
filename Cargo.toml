@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["win-nightlight-cli", "win-nightlight-lib", "win-nightlight-watch"]
+members = [
+    "probes/timestamp-rewind",
+    "win-nightlight-cli",
+    "win-nightlight-lib",
+    "win-nightlight-watch",
+]
 
 [workspace.package]
 version = "0.4.0"
@@ -12,8 +17,11 @@ readme = "README.md"
 keywords = ["windows", "night-light", "registry", "blue-light"]
 
 [workspace.dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
 win-nightlight-lib = { path = "win-nightlight-lib", version = "0.4.0" }
 hex-literal = "1.1.0"
+jiff = { version = "0.2.37", default-features = false }
 test-case = "3.4.0"
 thiserror = "2.0.21"
 windows-registry = "0.100.0"

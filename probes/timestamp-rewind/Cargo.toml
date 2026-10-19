@@ -1,0 +1,29 @@
+[package]
+name = "win-nightlight-timestamp-rewind-probe"
+description = "Interactive probe that measures how Windows handles Night Light settings timestamp rewinds"
+categories = ["os::windows-apis"]
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+camino = "1.2.6"
+clap.workspace = true
+fs-err = "3.3.2"
+jiff = { workspace = true, features = ["std"] }
+serde_json = "1.0.154"
+windows-registry.workspace = true
+win-nightlight-lib.workspace = true
+
+[dev-dependencies]
+hex-literal.workspace = true
+test-case.workspace = true
+
+[lints]
+workspace = true

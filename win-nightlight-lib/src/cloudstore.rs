@@ -70,9 +70,10 @@ impl Envelope {
 
     /// Set the last-modified time for a write at `now`.
     ///
-    /// Windows discards a write whose timestamp is older than the stored one
-    /// and itself advances the timestamp by at least two seconds, so the new
-    /// timestamp is never less than the previous one plus two seconds.
+    /// `explorer.exe` does not apply settings stamped at or below the highest
+    /// timestamp it has applied, and Windows Settings advances the timestamp
+    /// by at least two seconds per write, so the new timestamp is never less
+    /// than the previous one plus two seconds.
     pub(crate) fn stamp(&mut self, now: SystemTime) {
         self.modified = unix_secs_from_system_time(now)
             .max(self.modified.saturating_add(MIN_MODIFIED_STEP_SECS));

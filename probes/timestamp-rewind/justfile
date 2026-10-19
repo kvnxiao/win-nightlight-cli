@@ -1,0 +1,136 @@
+set shell := ["bash", "-uc"]
+
+probe := "cargo +stable run --locked --quiet --"
+
+environment:
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File environment.ps1
+
+watch seconds="30": (_run "watch" seconds)
+
+revert: (_run "revert")
+
+cloud-boundary: (_run "cloud-boundary")
+
+revert-window passes="15": (_run "revert-window" passes)
+
+stale-timestamp burst="256": (_run "stale-timestamp" burst)
+
+revert-after-rewind burst="256": (_run "revert-after-rewind" burst)
+
+explorer-restart-after-rewind burst="256": (_run "explorer-restart-after-rewind" burst)
+
+lower-cloud: (_run "lower-cloud")
+
+reset-both: (_run "reset-both")
+
+restart-shellhost: (_run "restart-shellhost")
+
+restart-explorer: (_run "restart-explorer")
+
+held-preview-after-explorer-restart: (_run "held-preview-after-explorer-restart")
+
+held-preview-after-rewind burst="256": (_run "held-preview-after-rewind" burst)
+
+preview-timing blocker rounds="2" *flags:
+    {{probe}} preview-timing {{blocker}} {{rounds}} {{flags}} || [ $? -eq 3 ]
+
+switch-release blocker: (_run "switch-release" blocker)
+
+stale-timestamp-survives-restart: (_run "stale-timestamp-survives-restart")
+
+reverts-while-off burst="256" *flags:
+    {{probe}} reverts-while-off {{burst}} {{flags}} || [ $? -eq 3 ]
+
+quick-settings-reader: (_run "quick-settings-reader")
+
+suite part *flags:
+    {{probe}} suite {{part}} {{flags}} || [ $? -eq 3 ]
+
+# The probe exits with code 3 when the observer types quit, which is not a failure.
+[positional-arguments]
+_run *args:
+    {{probe}} "$@" || [ $? -eq 3 ]
+
+# Trace Night Light registry access with Process Monitor while running a case
+[positional-arguments]
+trace seconds *case:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    seconds=$1
+    shift
+    # The probe exits with this code when the observer types quit.
+    quit_exit_code=3
+    cargo +stable build --locked --quiet
+    mkdir -p traces
+    name="traces/trace-$(date +%s)"
+    uv run --locked --quiet --project trace procmon-filter traces/cloudstore.pmc
+    MSYS_NO_PATHCONV=1 procmon /AcceptEula /Quiet /Minimized \
+        /LoadConfig "$(cygpath -aw traces/cloudstore.pmc)" \
+        /BackingFile "$(cygpath -aw "$name.capture.pml")" /Runtime "$seconds" &
+    capture=$!
+    for _ in $(seq 1 600); do [ -f "$name.capture.pml" ] && break; sleep 0.1; done
+    [ -f "$name.capture.pml" ] || { echo "Process Monitor did not start" >&2; exit 1; }
+    sleep 2
+    status=0
+    if [ $# -gt 0 ]; then
+        {{probe}} "$@" || status=$?
+        if ! kill -0 "$capture" 2>/dev/null; then
+            echo "The $seconds-second capture ended before the case did; rerun with more seconds." >&2
+        fi
+        # Windows reverts a write within about 60 ms and writes Cloud about 50 ms
+        # after a Windows Settings write, so a short wait captures both.
+        sleep 3
+    else
+        echo "Capturing for $seconds seconds. Type quit and press Enter to end it now." >&2
+        while kill -0 "$capture" 2>/dev/null; do
+            read_status=0
+            read -r -t 1 line || read_status=$?
+            if [ "$read_status" -eq 0 ] && [[ "${line,,}" =~ ^[[:space:]]*q(uit)?[[:space:]]*$ ]]; then
+                break
+            elif [ "$read_status" -eq 1 ]; then
+                # Standard input closed; wait for the capture to end on its own.
+                sleep 1
+            fi
+        done
+    fi
+    if kill -0 "$capture" 2>/dev/null; then
+        echo "Ending the capture. Process Monitor asks for administrator rights again." >&2
+        # /Terminate closes the backing file, so the summary covers every event
+        # captured before it.
+        MSYS_NO_PATHCONV=1 procmon /Terminate
+    fi
+    wait "$capture" || true
+    while tasklist | grep -qi procmon; do sleep 0.2; done
+    # Process Monitor can delete a backing file it wrote in an earlier run,
+    # so the capture moves to a name it never wrote.
+    mv "$name.capture.pml" "$name.pml"
+    uv run --locked --quiet --project trace summarize-trace "$name.pml" | tee "$name.tsv"
+    echo "Trace: $name.pml, summary: $name.tsv" >&2
+    if [ "$status" -ne 0 ] && [ "$status" -ne "$quit_exit_code" ]; then exit "$status"; fi
+
+# Apply ruff fixes and formatting to the trace project
+[working-directory: 'trace']
+trace-fix:
+    uv run --locked ruff check --fix
+    uv run --locked ruff format
+
+# Check the trace project's formatting, lint, and types
+[working-directory: 'trace']
+trace-lint:
+    uv run --locked ruff format --check
+    uv run --locked ruff check
+    uv run --locked ty check
+
+# Run the trace project's tests with branch coverage
+[working-directory: 'trace']
+trace-test:
+    uv run --locked coverage run -m pytest
+    uv run --locked coverage report --show-missing
+
+# Audit the trace project's locked dependencies
+[working-directory: 'trace']
+trace-audit:
+    uv audit --locked
+
+# Run every trace project check, as CI does
+trace-check: trace-lint trace-test trace-audit
