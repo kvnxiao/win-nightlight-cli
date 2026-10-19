@@ -28,8 +28,7 @@ const STEP_INTERVAL: Duration = Duration::from_secs(3);
 const SWEEP_RATES_HZ: [u32; 4] = [30, 60, 144, 240];
 const INTERFERENCE_DRAG: Duration = Duration::from_secs(30);
 const INTERFERENCE_RATE_HZ: u32 = 30;
-// One period fades from neutral to red and back.
-const INTERFERENCE_PERIOD_SECS: u32 = 10;
+const BACK_AND_FORTH_PERIOD_SECS: u32 = 10;
 const RESTART_DRAG: Duration = Duration::from_secs(30);
 const RESTART_RATE_HZ: u32 = 240;
 // The fade stays near neutral, so an answer of red or yellow comes from the
@@ -131,6 +130,25 @@ fn interpolate(from: u16, to: u16, index: u32, steps: u32) -> anyhow::Result<Col
     let scaled = from * steps + (to - from) * i64::from(index);
     let tens = (2 * scaled + 10 * steps).div_euclid(20 * steps);
     Ok(ColorTemperature::new(u16::try_from(tens * 10)?)?)
+}
+
+/// Return the temperature at step `index` of a fade at `rate_hz` steps per
+/// second that moves from `from` to `to` kelvin and back every
+/// [`BACK_AND_FORTH_PERIOD_SECS`].
+fn back_and_forth(
+    from: u16,
+    to: u16,
+    index: u32,
+    rate_hz: u32,
+) -> anyhow::Result<ColorTemperature> {
+    let half_period = rate_hz * BACK_AND_FORTH_PERIOD_SECS / 2;
+    let position = index % (2 * half_period);
+    interpolate(
+        from,
+        to,
+        half_period - position.abs_diff(half_period),
+        half_period,
+    )
 }
 
 fn neutral_to_red(index: u32, steps: u32) -> anyhow::Result<ColorTemperature> {
@@ -457,16 +475,8 @@ pub(crate) fn drag_interference(session: &mut Session, rate_hz: Option<u32>) -> 
         INTERFERENCE_DRAG.as_secs()
     ))?;
     count_down("the probe's drag begins.")?;
-    let half_period = rate_hz * INTERFERENCE_PERIOD_SECS / 2;
     held_drag(session, INTERFERENCE_DRAG, rate_hz, |index, _steps| {
-        let position = index % (2 * half_period);
-        let toward_red = half_period - position.abs_diff(half_period);
-        interpolate(
-            Tint::Neutral.kelvin(),
-            Tint::Red.kelvin(),
-            toward_red,
-            half_period,
-        )
+        back_and_forth(Tint::Neutral.kelvin(), Tint::Red.kelvin(), index, rate_hz)
     })?;
     session.snapshot("after_interference")?;
     let restore = step_drag(session, ColorTemperature::new(Tint::Yellow.kelvin())?)?;
@@ -495,19 +505,27 @@ pub(crate) fn restart_after_slider(
     session
         .wait_for_observer("Open Settings > System > Display > Night light and keep it open.")?;
     say(&format!(
-        "For up to {} s the probe fades near neutral with preview held on, as a slider drag          does. While it runs, press the Strength slider, drag it for about 3 s, and release it          near its left end within 20 s. The probe stops writing when you release the slider.          Then leave the slider alone until the probe asks a question.",
+        "For up to {} s the probe fades near neutral with preview held on, as a slider drag \
+         does. While it runs, press the Strength slider, drag it for about 3 s, and release it \
+         near its left end within 20 s. The probe stops writing when you release the slider. \
+         Then leave the slider alone until the probe asks a question.",
         RESTART_DRAG.as_secs()
     ))?;
     count_down("the probe's drag begins.")?;
-    let (drag, released) = drag_until_release(session, rate_hz, steps)?;
+    let (drag, gap_secs) = drag_until_release(session, rate_hz, steps)?;
     session.record("held_drag", drag)?;
     session.snapshot("after_release")?;
-    if !released {
+    // A new handle's per-step drag stamps its two writes 2 s and 4 s above the
+    // stored timestamp. With a smaller gap, explorer.exe would apply the second
+    // write without the margin.
+    let Some(gap_secs) = gap_secs.filter(|gap| *gap >= 2 * WRITE_LEAD_SECS) else {
         session.wait_for_observer("Close Settings.")?;
-        return say(
-            "The drag did not stop at a release that left the stored timestamp in place, so the              probe skipped the writes through new handles.",
-        );
-    }
+        return say(&format!(
+            "The drag did not stop at a release stamped at least {} s below the probe's highest \
+             write, so the probe skipped the writes through new handles.",
+            2 * WRITE_LEAD_SECS
+        ));
+    };
     session.light = Nightlight::new();
     let control = step_drag(session, ColorTemperature::new(Tint::Red.kelvin())?)?;
     session.record("new_handle", control)?;
@@ -520,68 +538,96 @@ pub(crate) fn restart_after_slider(
     let margin_applied = session.display_shows(Tint::Yellow, "new_handle_with_margin")?;
     session.wait_for_observer("Close Settings.")?;
     say(&format!(
-        "Per-step drag through a new handle: {}. Through a new handle with the startup margin: {}.",
+        "The release left the stored timestamp {gap_secs} s below the probe's highest write. \
+         Per-step drag through a new handle: {}. Through a new handle with the startup margin: \
+         {}.",
         applied_or_ignored(control_applied),
         applied_or_ignored(margin_applied)
     ))
 }
 
+/// How a drag that waits for the observer's release ended.
+enum DragEnd {
+    /// A read before step `step` found preview off and the settings
+    /// timestamp `stored`.
+    Released {
+        step: u32,
+        stored: u64,
+    },
+    /// The probe's write at step `step` found preview off and turned it back
+    /// on.
+    WriteFoundPreviewOff {
+        step: u32,
+    },
+    Completed,
+}
+
 /// Make a held drag of `steps` steps at `rate_hz` that fades between neutral
 /// and [`NEAR_NEUTRAL_KELVIN`], and stop without writing again as soon as a
-/// read finds preview off. Return the drag's record and whether it stopped at
-/// a release that the probe did not overwrite.
+/// read finds preview off. Return the drag's record and, when the drag
+/// stopped that way, how many seconds the stored timestamp was below the
+/// probe's highest write.
 fn drag_until_release(
     session: &mut Session,
     rate_hz: u32,
     steps: u32,
-) -> anyhow::Result<(Value, bool)> {
-    let half_period = rate_hz * INTERFERENCE_PERIOD_SECS / 2;
+) -> anyhow::Result<(Value, Option<u64>)> {
     let mut log = DragLog::default();
-    let mut highest_written = 0;
-    let mut release = None;
-    let mut overwritten = false;
     let start_found_preview = session.light.start_preview()?;
+    let mut highest_written = modified_secs(&session.light.read_settings()?)?;
+    let mut end = DragEnd::Completed;
     let started = Instant::now();
     for index in 1..=steps {
         session.check_quit()?;
         sleep_until(started + RESTART_DRAG * index / steps);
         let stored = session.light.read_settings()?;
         if !stored.is_previewing() {
-            release = Some((index, modified_secs(&stored)?));
+            end = DragEnd::Released {
+                step: index,
+                stored: modified_secs(&stored)?,
+            };
             break;
         }
-        let position = index % (2 * half_period);
-        let toward_near_neutral = half_period - position.abs_diff(half_period);
-        let temperature = interpolate(
-            Tint::Neutral.kelvin(),
-            NEAR_NEUTRAL_KELVIN,
-            toward_near_neutral,
-            half_period,
-        )?;
+        let temperature =
+            back_and_forth(Tint::Neutral.kelvin(), NEAR_NEUTRAL_KELVIN, index, rate_hz)?;
         let preview_was_on = session.light.preview_color_temperature(temperature)?;
         log.push(started.elapsed(), preview_was_on);
         highest_written = highest_written.max(modified_secs(&session.light.read_settings()?)?);
-        // The release came between the read and this write, which turned
-        // preview back on and stamped above the release.
+        // A release between the probe's read and the library's read inside
+        // this write ends the drag here. A release between the library's read
+        // and its write is turned back on without a sign in the return value.
         if !preview_was_on {
-            overwritten = true;
+            end = DragEnd::WriteFoundPreviewOff { step: index };
             break;
         }
     }
-    if release.is_none() && !overwritten {
+    if matches!(end, DragEnd::Completed) {
         session.light.end_preview()?;
     }
     session.note_settings_modified(highest_written);
+    let (end_name, end_step, stored, gap_secs) = match end {
+        DragEnd::Released { step, stored } => (
+            "released",
+            Some(step),
+            Some(stored),
+            Some(highest_written.saturating_sub(stored)),
+        ),
+        DragEnd::WriteFoundPreviewOff { step } => {
+            ("write_found_preview_off", Some(step), None, None)
+        }
+        DragEnd::Completed => ("completed", None, None, None),
+    };
     let record = json!({
         "rate_hz": rate_hz,
         "start_found_preview": start_found_preview,
-        "release_step": release.map(|(step, _)| step),
-        "release_overwritten": overwritten,
-        "stored_at_release_unix_s": release.map(|(_, stored)| stored),
+        "end": end_name,
+        "end_step": end_step,
+        "stored_at_release_unix_s": stored,
         "highest_written_unix_s": highest_written,
+        "gap_s": gap_secs,
         "log": log.to_json()?,
     });
-    Ok((record, release.is_some()))
+    Ok((record, gap_secs))
 }
 
 /// Write `tint` while preview stays on, ask whether it applied, and record
