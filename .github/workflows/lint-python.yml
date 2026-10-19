@@ -1,0 +1,39 @@
+# Runs the shared lint, test, and audit tasks of the timestamp rewind probe's Python trace project
+
+name: Lint Python
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  trace:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: probes/timestamp-rewind
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          working-directory: probes/timestamp-rewind/trace
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install the locked environment
+        run: uv sync --locked --project trace
+
+      - name: Run lint, test, and audit tasks
+        run: just trace-check

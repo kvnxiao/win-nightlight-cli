@@ -1,0 +1,61 @@
+[project]
+name = "rewind-trace"
+version = "0.0.0"
+description = "Summarize Process Monitor traces of the Night Light timestamp rewind probe"
+requires-python = ">=3.15"
+classifiers = ["Private :: Do Not Upload"]
+dependencies = [
+    "procmon-parser>=0.4",
+]
+
+[project.scripts]
+procmon-filter = "rewind_trace.procmon_filter:main"
+summarize-trace = "rewind_trace.summarize:main"
+preview-reads = "rewind_trace.preview_reads:main"
+reverts = "rewind_trace.reverts:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "coverage>=7.16.2",
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+    "ty>=0.0.89",
+]
+
+[tool.uv]
+required-version = ">=0.13"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["COM812", "CPY001"]
+extend-safe-fixes = ["TC001", "TC002", "TC003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "D", "PLR2004", "INP001"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ty.rules]
+all = "error"
+
+[tool.ty.analysis]
+respect-type-ignore-comments = false
+
+[tool.pytest]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--import-mode=importlib"]
+strict = true
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["rewind_trace"]
