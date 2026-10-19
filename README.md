@@ -37,9 +37,17 @@ wnl --help
 
 ## `win-nightlight-cli`: `wnl.exe` usage
 
-`on`, `off`, and `toggle` change only whether Night Light is on now; they do not change the
-schedule. `temp` sets the color temperature and preserves the schedule and on/off state. These
-commands print nothing on success. Temperatures use kelvin, from 1200K to 6500K.
+`on`, `off`, and `toggle` change whether Night Light is on now; they do not change the schedule.
+`temp` sets the color temperature and preserves the schedule and on/off state. While Night Light is
+on, the screen changes right away. While it is off, `temp` stores the temperature, and the screen
+shows it when Night Light turns on. Temperatures use kelvin, from 1200K (warmest) to 6500K (no
+tint), with or without the `K`. These commands print nothing on success.
+
+Preview is a temporary tint that Windows shows while the user holds the Strength slider in Windows
+Settings, even when Night Light is off. A program that exits in the middle of a change can leave
+preview on, and the screen then stays tinted after Night Light turns off. `on`, `off`, `toggle`,
+`temp`, and `schedule` also turn preview off. Turning preview off writes the settings value, and
+only when preview was on.
 
 ```shell
 wnl on
@@ -100,14 +108,14 @@ Commands:
   help    Print this message or the help of the given subcommand(s)
 ```
 
-`schedule hours` accepts `--start HH:MM` and `--end HH:MM` in 24-hour time and keeps the stored
-time for an omitted option. `schedule off` keeps the schedule type and times, and does not change
-whether Night Light is on. The command prints the new schedule and, when the schedule is on,
+`schedule hours` accepts `--start HH:MM` and `--end HH:MM` in 24-hour time and keeps the stored time
+for an omitted option. `schedule off` keeps the schedule type and times, and does not change whether
+Night Light is on. Each `schedule` command prints the new schedule and, when the schedule is on,
 whether the current time is inside its window:
 
 ```shell
 $ wnl schedule hours --start 21:00 --end 07:00
-schedule set to set hours, 21:00 to 07:00; the current time is inside this window
+schedule set to set hours, 21:00 to 07:00; the current time is outside this window
 $ wnl schedule sunset
 schedule set to sunset to sunrise, 19:17 to 06:38; the current time is outside this window
 $ wnl schedule off
@@ -134,79 +142,104 @@ cargo add win-nightlight-lib
 ```rust
 use win_nightlight_lib::ColorTemperature;
 use win_nightlight_lib::Nightlight;
-use win_nightlight_lib::RefreshPolicy;
 use win_nightlight_lib::Schedule;
 
 let nightlight = Nightlight::new();
 nightlight.set_active(true)?;
 
 let temperature: ColorTemperature = "3400K".parse()?;
-nightlight.set_color_temperature(temperature, RefreshPolicy::Automatic)?;
+nightlight.apply_color_temperature(temperature)?;
 nightlight.update_settings(|settings| settings.set_schedule(Schedule::SunsetToSunrise))?;
 ```
 
-The library reads and writes the two registry values that store Night Light:
+The library reads and writes the two registry values that store Night Light. It decodes them into
+two types:
 
-- `Settings`: the schedule mode and times, the color temperature, and the sunset and sunrise times
-  Windows computes.
-- `State`: whether Night Light is on now, what caused the last change, and when it happened.
+- The settings value, as `Settings`: the schedule mode and times, the color temperature, the
+  preview flag, and the sunset and sunrise times Windows computes.
+- The state value, as `State`: whether Night Light is on now, what caused the last change, and
+  when it happened.
 
-`Nightlight` is the entry point. Its temperature operation can read settings and state but writes
-only settings. On/off operations write only state and preserve the schedule.
+`Nightlight` is the entry point. Its temperature methods can read settings and state but write
+only settings. Its on/off methods write only state and preserve the schedule.
 
-### Temperature refresh
+### Change the color temperature
 
-Preview requests that Windows temporarily apply the selected color temperature, even while Night
-Light is off. Windows Settings uses it while adjusting the temperature slider.
-`Nightlight::set_color_temperature` takes a `RefreshPolicy`. `Automatic`, used by `wnl temp`,
-selects the refresh behavior from the current settings and state:
+Preview is a flag in the settings: while it is on, Windows shows the stored color temperature, even
+while Night Light is off. Windows Settings turns it on while the user holds the Strength slider. A
+ramp is a gradual change over more than 30 s, and a fade is a gradual change over up to 30 s.
+`Nightlight` changes the temperature in three ways:
 
-- If preview is already active, it preserves preview and stores a changed temperature.
-- Otherwise, if Night Light is active, it writes the temperature with preview enabled, then rereads
-  settings and clears preview. It repeats this sequence even when the temperature is unchanged.
-- If Night Light is inactive, it stores a changed temperature without starting preview.
+| Method                                                         | Writes                                                                                                                                                                  | Use                                   |
+| :------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------ |
+| `apply_color_temperature(t)`                                   | While Night Light is on: `t` with preview on, then preview off after 50 ms. While it is off: `t` with preview off, in one write. No write when both are already stored. | A one-off change; `wnl temp` calls it |
+| `set_color_temperature(t)`                                     | `t` in one write, without changing preview. No write when `t` is already stored.                                                                                        | Storing a temperature, or a ramp step |
+| `start_preview`, `preview_color_temperature(t)`, `end_preview` | One write each: preview on, then `t` with preview on, then preview off.                                                                                                 | A fade with preview held on           |
 
-`Always` writes the requested temperature with preview enabled, then rereads settings and clears
-preview on every call. This applies even when the temperature already matches or preview is already
-active. It does not read or write the on/off state, so it also requests preview while Night Light is
-off. Both policies preserve schedule settings. The return value reports whether settings were
-written; a successful `Always` call returns `true`.
+- `apply_color_temperature` ends any preview that was on and returns whether one was. While Night
+  Light is on, it blocks the calling thread for the 50 ms wait. If turning preview off fails three
+  times in a row, it returns an error of kind `ErrorKind::PreviewCleanup`, and preview may stay on;
+  calling it again repeats the whole sequence.
+- The preview methods each write once, even when nothing changes, and return whether preview was on
+  before the call. They do not sleep.
+- `update_settings` and `write_settings` write at most once and do not turn preview on or off
+  themselves. `write_settings` stores the preview flag of the `Settings` it is given.
 
-The writes run without a sleep. Each write first adds two seconds to the timestamp in the decoded
-`Settings` or `State` record, saturating at `u64::MAX`. It then uses the later of that result and the
-current Unix time.
-`write_settings` and `write_state` use the record supplied by the caller. Temperature updates read
-settings first and reread them for cleanup. Rapid refreshes can advance timestamps ahead of the
-clock.
+Each method in the table reads the settings and then writes them. Another writer, such as Windows
+Settings or another call, can write in between, and the later write replaces the earlier one. Avoid
+overlapping calls. A successful write does not confirm that the display changed.
 
-Avoid overlapping temperature calls or using the Night Light slider in Windows Settings during a
-call. Cleanup rereads settings to preserve intervening changes, including a newer temperature, but
-registry updates are not atomic with other writers. Successful writes do not confirm a display update or guarantee that
-another writer has not changed the requested values. After `explorer.exe` is ended and restarted,
-Windows ignores these refreshes until someone moves the Night Light slider in Windows Settings. The
-[timestamp rewind probe](probes/timestamp-rewind/README.md) has the measurements.
+### Settings timestamps
 
-If three cleanup attempts fail, `ErrorKind::PreviewCleanup` reports that the temperature was
-written and preview may remain active. A later call with `Always` repeats the complete refresh,
-including when the requested temperature is unchanged. `Automatic` preserves preexisting preview
-and therefore does not provide that recovery contract.
+Each write of the settings or state value stores a last-modified timestamp in whole seconds.
+Microsoft does not document how Windows uses it, and Windows behaves in ways a writer has to plan
+for:
 
-`update_settings` and `write_settings` write at most once without adding this preview sequence.
+- `explorer.exe`, which applies Night Light to the display, ignores a settings write stamped at or
+  below the highest timestamp it has applied. A program that moves the timestamp backward has its
+  later writes ignored until one is stamped above that maximum.
+- Windows keeps a third registry value, `Cloud`, next to the settings value. It stores only the
+  timestamp of the latest Windows Settings write. When a program writes the settings stamped below
+  that timestamp, Windows replaces the write with the last Windows Settings write.
+- After `explorer.exe` restarts, it ignores temperature changes until a preview stays on for about 9
+  ms or longer, or until the user moves the slider in Windows Settings. Switching Night Light on
+  still shows the stored temperature. `apply_color_temperature` keeps preview on for 50 ms while
+  Night Light is on; `set_color_temperature` does not turn it on.
+
+The timestamp rewind probe, described below, measured these rules for the settings value only.
+
+The library stamps each write 2 s after the stored timestamp, the same step Windows Settings uses,
+or at the current time if that is later. It never moves the timestamp backward. Writing more often
+than once every 2 s therefore moves the timestamp ahead of real time, and the difference shrinks
+only as real time passes. While the timestamp is ahead, Windows still applies each library write,
+because each is stamped above the one before. The difference matters when another program writes the
+settings stamped with the current time: Windows then ignores writes until real time catches up.
+
+The [timestamp rewind probe](probes/timestamp-rewind/README.md), a program in this repository,
+measured this behavior on a live system. It writes Night Light in controlled sequences, asks an
+observer at the display which tint the screen shows, and records registry access with Process
+Monitor. Its cases cover moving the timestamp backward, writes below `Cloud`, `explorer.exe`
+restarts, preview timings, fades made with preview held on, write rates, and writes without preview.
+See the probe's README for the findings and how to rerun its cases.
+
+For an application that changes the temperature gradually, the [color temperature transitions
+guide](docs/color-temperature-transitions.md) prescribes which methods to call for one-off changes,
+ramps, and fades and how often to write. It also describes what happens when the user moves the
+slider during a gradual change.
 
 ### Types
 
-| Type                           | Purpose                                                                 |
-| :----------------------------- | :---------------------------------------------------------------------- |
-| `Nightlight`                   | Reads, writes, and updates the settings and state values.               |
-| `RefreshPolicy`               | Selects conditional refresh or a complete refresh on every temperature call. |
-| `Settings`                     | Schedule and color temperature; `from_bytes` and `to_bytes` round-trip. |
-| `State`                        | Whether Night Light is on, the transition cause, and its time.          |
-| `ColorTemperature`             | Validated color temperature from 1200K to 6500K.                        |
-| `TimeOfDay`                    | 24-hour `HH:MM` time with a midnight-wrapping window check.             |
-| `Schedule`                     | Schedule change passed to `Settings::set_schedule`.                     |
-| `ScheduleMode`, `ScheduleKind` | Effective schedule mode, and the type kept while the schedule is off.   |
-| `TransitionCause`              | Whether the last on/off change was manual or scheduled.                 |
-| `Error`, `ErrorKind`, `Result` | Errors classified as not found, registry, decode, encode, input, or preview cleanup.     |
+| Type                           | Purpose                                                                                                                                  |
+| :----------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------- |
+| `Nightlight`                   | Reads, writes, and updates the settings and state values.                                                                                |
+| `Settings`                     | Schedule, color temperature, and preview; `from_bytes` and `to_bytes` round-trip every field except unknown fields inside a time of day. |
+| `State`                        | Whether Night Light is on, the transition cause, and its time.                                                                           |
+| `ColorTemperature`             | Validated color temperature from 1200K to 6500K.                                                                                         |
+| `TimeOfDay`                    | 24-hour `HH:MM` time, with a check for whether it falls in a window that can wrap past midnight.                                         |
+| `Schedule`                     | Schedule change passed to `Settings::set_schedule`.                                                                                      |
+| `ScheduleMode`, `ScheduleKind` | Effective schedule mode, and the type kept while the schedule is off.                                                                    |
+| `TransitionCause`              | Whether the last on/off change was manual or scheduled.                                                                                  |
+| `Error`, `ErrorKind`, `Result` | Errors classified as not found, registry, decode, encode, invalid input, or preview cleanup.                                             |
 
 ### Registry format
 
@@ -228,9 +261,9 @@ Use the watcher to observe Night Light changes from a Rust application. Add it t
 cargo add win-nightlight-watch
 ```
 
-Create `Watcher::settings()` or `Watcher::state()` for the record you need. Each watcher registers
-for changes before returning; call `read_current()` for its initial snapshot. If you need both
-records, create both watchers before reading either.
+Create `Watcher::settings()` or `Watcher::state()` for the record you need. Each constructor
+registers for changes before it returns; call `read_current()` for its initial snapshot. If you need
+both records, create both watchers before reading either.
 
 `wait_timeout(Duration)` waits for a change, registers for the next notification, and reads the
 current record through `win-nightlight-lib`. It returns `Some(Snapshot::Settings(...))` or
@@ -241,12 +274,14 @@ snapshots can describe the same data. The API does not capture the exact value t
 notification or provide an atomic settings-and-state pair.
 
 Use `AsHandle` or `AsRawHandle` with a native Windows wait or message loop, then call
-`read_pending()` on the signaled watcher. External waits preserve the signal until the watcher
-consumes it. Each watcher has one notification consumer and manages its own rearming.
+`read_pending()` on the signaled watcher. An external wait does not consume the signal;
+`read_pending()` consumes it. Each watcher is the only consumer of its notifications and registers
+for the next notification itself.
 
-If reads must be deferred, `discard_pending()` consumes and rearms without reading. Use
-`read_current()` to retry on a trigger chosen by the application. `ErrorKind::Read` preserves
-notification registration; notification failures require dropping the watcher.
+If reads must be deferred, `discard_pending()` consumes the pending notification and registers for
+the next one without reading. Call `read_current()` to retry the read when the application chooses.
+After an error of kind `ErrorKind::Read`, the watcher stays registered for notifications. After a
+notification failure, drop the watcher.
 
 See [change notifications](docs/change-notifications.md) for lifecycle, timeout, and error
 contracts, and the [crate documentation](https://docs.rs/win-nightlight-watch) for a compiled

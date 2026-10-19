@@ -52,11 +52,11 @@ Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Cloud\
   windows.data.bluelightreduction.settings
 ```
 
-Contains: only the timestamp of the latest settings write by Windows Settings. Its layout differs
-from the envelope of the settings and state values. `explorer.exe` writes
-it with that write's timestamp 44–62 ms after each Windows Settings write. Settings writes by any
+Contains: only the timestamp of the latest settings write by Windows Settings. 44–62 ms after each
+Windows Settings write, `explorer.exe` writes it with that write's timestamp. Settings writes by any
 other program, such as one that uses this repository's `win-nightlight-lib` library, do not change
-it. The record has no payload:
+it. The record has no payload, and its layout differs from the envelope of the settings and state
+values:
 
 ```
 Marshaled CB v1 header: [0x43, 0x42, 0x01, 0x00]
@@ -99,34 +99,40 @@ the Night Light fields. The inner struct's `BT_STOP` is the last byte of the lis
 
 ### Timestamp rule
 
-Windows does not reject a settings write because of its envelope timestamp. Instead, two Windows
-behaviors depend on the settings timestamp. The
-[timestamp rewind probe](../probes/timestamp-rewind/README.md) measured both on build 26300:
+The registry accepts a settings write with any envelope timestamp. Two Windows behaviors then depend
+on the timestamp. The [timestamp rewind probe](../probes/timestamp-rewind/README.md), a program in
+this repository that writes the settings and asks an observer what the screen shows, measured both
+on build 26300:
 
 - **Revert below `Cloud`:** a settings write stamped below the [`Cloud` record](#cloud-record)
   timestamp is replaced with the last Windows Settings write, including its timestamp and
-  temperature. `explorer.exe` makes this revert, and so does `ShellHost.exe`, the process that
-  shows Quick Settings, once Quick Settings has opened. Each usually reverts within 4 ms, and
-  sometimes up to about 70 ms later. A write that lands before a revert is lost.
+  temperature. `explorer.exe` makes this revert, and so does `ShellHost.exe`, the process that shows
+  Quick Settings, once Quick Settings has opened. Each usually reverts within 4 ms, and sometimes up
+  to about 70 ms later. A revert overwrites any write made between the write below `Cloud` and that
+  revert.
 - **Stale-timestamp block after a rewind:** a rewind is a settings write that moves the timestamp
-  backward but not below `Cloud`, so Windows keeps it. `explorer.exe`, which applies the settings
-  to the display, behaves as if it keeps the highest timestamp it has applied. After a rewind, it
-  ignores refreshes stamped at or below that maximum; the probe calls this state a stale-timestamp
-  block. A refresh is a temperature write with preview (field 70) turned on and then off, as
-  `RefreshPolicy::Always` makes in [Writer rules](#writer-rules). A reverted write below `Cloud`,
-  or an `explorer.exe` restart, clears the maximum (findings 4 and 6 of the probe).
+  backward but not below `Cloud`, so Windows keeps it. `explorer.exe`, which applies the settings to
+  the display, behaves as if it keeps the highest timestamp it has applied. After a rewind, it
+  ignores temperature changes stamped at or below that maximum; the probe calls this state a
+  stale-timestamp block. The ignored changes include two kinds of temperature write: a write with
+  preview (field 70) on followed at once by a write that turns preview off, and a write without
+  preview. Without a block, both apply (findings 3 and 16 of the probe). A reverted write below
+  `Cloud` clears the maximum (finding 4). An `explorer.exe` restart clears it too, but starts a
+  different block, described in [Writer rules](#writer-rules) (finding 6).
 
-Windows Settings advances the timestamp by at least two seconds on each of its writes. A writer
-therefore keeps the timestamp increasing by setting it to the later of the current Unix time and
-the previous timestamp plus two seconds:
+Windows Settings stamps each of its writes two seconds after the last timestamp it read or wrote. A
+writer that uses the same two-second step keeps the timestamp increasing: it sets the timestamp to
+the later of the current Unix time and the previous timestamp plus two seconds. `win-nightlight-lib`
+stamps the state value with the same rule; the probe measured the two behaviors above only for the
+settings value.
 
 ```
 modified = max(now_unix_seconds, previous_modified + 2)
 ```
 
-Rapid writes can advance this whole-second timestamp ahead of the clock. Its differences do not
-measure elapsed time. Reread the value before each subsequent write and compute the next timestamp
-from that snapshot. The read and write are not atomic with other writers.
+Rapid writes can advance this whole-second timestamp ahead of the clock. The difference between two
+such timestamps does not measure elapsed time. Reread the value before each subsequent write and
+compute the next timestamp from that snapshot. The read and write are not atomic with other writers.
 
 ## Inner Settings Schema
 
@@ -192,12 +198,12 @@ In the captured settings values, only fields 40 and 70 changed. Each write also 
 envelope timestamp. These are observations of the native UI, not a documented Windows API
 contract.
 
-A capture on 2026-10-16 UTC recorded slider drags and four click interactions; the table below
-measures the clicks. The recording program used one `Watcher` from this repository's
-`win-nightlight-watch` crate per key, which registers notifications through
-`RegNotifyChangeKeyValue`. The program sampled its clocks after `WaitForMultipleObjects` returned
-a notification and before rearming and reading the value. Each interval below runs from the
-snapshot with preview true to the next snapshot with preview false:
+A capture on 2026-10-16 UTC recorded slider drags and four click interactions; the table below lists
+measurements of the clicks. The recording program used one `Watcher` per key from this repository's
+`win-nightlight-watch` crate. A `Watcher` registers for notifications through
+`RegNotifyChangeKeyValue`. The program sampled its clocks after `WaitForMultipleObjects` returned a
+notification and before registering for the next notification and reading the value. Each interval
+below runs from the snapshot with preview true to the next snapshot with preview false:
 
 | Click | Notification observation interval | Registry-key last-write interval | Envelope timestamp increase |
 | ----- | --------------------------------- | -------------------------------- | --------------------------- |
@@ -255,27 +261,39 @@ A writer that changes one value does not modify the other value:
 - Changing the schedule or the color temperature writes only the settings value and stamps the
   envelope timestamp.
 
-`Nightlight::set_color_temperature` in `win-nightlight-lib` writes only settings. With
-`RefreshPolicy::Automatic`:
+`win-nightlight-lib`, the Rust library in this repository, changes the temperature in three ways,
+and each writes only settings:
 
-- If preview is already active, it writes the temperature only when it differs from the stored
-  one, and preserves field 70.
-- Otherwise, if Night Light is active, it writes the temperature with field 70 true, then rereads
-  settings and clears field 70. It does not sleep between writes.
-- If Night Light is inactive, it writes the temperature only when it differs from the stored one,
-  without starting preview.
+- `Nightlight::set_color_temperature` writes the temperature once without changing field 70, and
+  does not write when the temperature already matches.
+- `Nightlight::apply_color_temperature` reads the settings and the on/off state before writing:
+  - While Night Light is on, it writes the temperature with field 70 true, waits 50 ms, then rereads
+    the settings and, if field 70 is still true, writes them with field 70 false. A click on the
+    native slider keeps preview on for a similar 51 to 97 ms, though it also writes the temperature
+    with preview off first. Because the second write starts from a fresh read, it keeps a newer
+    temperature that another program wrote during the wait.
+  - While Night Light is off, it writes the temperature with field 70 false in one write, so the
+    screen stays untinted, and does not write when both already match. The native slider instead
+    previews the temperature while Night Light is off.
+- `Nightlight::start_preview`, `Nightlight::preview_color_temperature`, and
+  `Nightlight::end_preview` write the settings once per call, as a drag of the native slider does:
+  preview on with the temperature unchanged, a temperature with preview on, and preview off. Preview
+  stays on from `start_preview` to `end_preview`, so the screen shows each temperature, even while
+  Night Light is off.
 
-With `RefreshPolicy::Always`, every call writes the requested temperature with field 70 true,
-then rereads settings and clears field 70. This includes unchanged temperatures and preexisting
-preview. It does not read the on/off state or sleep between writes. Cleanup preserves other fields
-from the fresh settings read, including a newer temperature written by another program.
+After `explorer.exe` is ended and restarted, Windows ignores both writes without preview and writes
+that turn preview on and off at once. Writes apply as before once the user moves the native slider
+or a preview stays on for about 9 ms or longer. `apply_color_temperature` keeps preview on that long
+while Night Light is on, and so do `preview_color_temperature` calls between `start_preview` and
+`end_preview`; `set_color_temperature` does not. See finding 7 of the [timestamp rewind
+probe](../probes/timestamp-rewind/README.md#7-every-explorerexe-restart-blocks-ordinary-refreshes).
+The [color temperature transitions guide](color-temperature-transitions.md) describes when to use
+each method.
 
-After `explorer.exe` is ended and restarted, Windows ignores these refreshes until Windows
-Settings writes the settings, or until a preview stays on for about 9 ms or longer. Neither policy
-keeps preview on that long. See finding 7 of the
-[timestamp rewind probe](../probes/timestamp-rewind/README.md#7-every-explorerexe-restart-blocks-ordinary-refreshes).
-
-`Nightlight::write_settings` and `Nightlight::update_settings` do not add this preview sequence.
+`Nightlight::update_settings` reads the settings, applies a caller's change, and writes them only
+when the change modified them. `Nightlight::write_settings` writes a `Settings` record the caller
+supplies. Both write at most once, do not turn field 70 on or off themselves, and store the field
+70 of the record they write.
 
 A writer also preserves fields it does not model, at the inner struct and at every envelope level,
 and writes them back in ascending field-ID order. `win-nightlight-lib` does not preserve unknown
