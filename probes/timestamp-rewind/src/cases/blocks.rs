@@ -69,7 +69,7 @@ impl TrialOutcome {
 ///
 /// Afterwards the stored temperature is yellow, or red for
 /// [`Blocker::None`].
-fn block_refreshes(session: &mut Session, blocker: Blocker) -> anyhow::Result<bool> {
+pub(super) fn block_refreshes(session: &mut Session, blocker: Blocker) -> anyhow::Result<bool> {
     match blocker {
         Blocker::None => {
             session.refresh(Tint::Red, "block")?;
@@ -214,7 +214,8 @@ pub(crate) fn preview_timing(
     say(&format!("Preview timing results:\n{}", summary.join("\n")))
 }
 
-/// Switch Night Light off, ask, and switch it back on.
+/// Switch Night Light off, ask the observer whether the screen is neutral, and
+/// switch it back on.
 ///
 /// Returns whether the screen then shows `stored`, the stored temperature.
 fn switch_off_and_on(session: &mut Session, stored: Tint) -> anyhow::Result<bool> {

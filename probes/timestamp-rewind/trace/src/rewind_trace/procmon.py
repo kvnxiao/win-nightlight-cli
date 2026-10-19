@@ -1,7 +1,7 @@
 """Read Process Monitor logs and write Process Monitor configurations.
 
-procmon_parser ships no type information, so the rest of the package uses
-this module instead of importing procmon_parser.
+procmon_parser does not ship type information, so the rest of the package
+uses this module instead of importing procmon_parser.
 """
 
 from dataclasses import dataclass

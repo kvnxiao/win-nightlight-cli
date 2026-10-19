@@ -69,7 +69,7 @@ class SummaryRow:
 
     @property
     def is_settings_write(self) -> bool:
-        """Return whether the row writes the `Current` settings value."""
+        """Return whether the row records a write of the `Current` settings value."""
         return (
             self.operation is Operation.WRITE
             and self.store is Store.CURRENT

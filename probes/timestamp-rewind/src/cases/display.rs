@@ -127,8 +127,9 @@ pub(crate) fn explorer_restart_after_rewind(
 ) -> anyhow::Result<()> {
     let peak = burst_and_rewind(session, burst)?;
     restart_shell(session, ShellProcess::Explorer)?;
-    // The stored temperature is the ignored red refresh, and the screen still
-    // shows the yellow burst unless the new explorer.exe applies it.
+    // The stored temperature is red from the ignored refresh, and the screen
+    // still shows yellow from the burst unless the new explorer.exe applies the
+    // stored temperature.
     let shown = if session.display_shows(Tint::Red, "after_explorer_restart")? {
         Tint::Red
     } else {

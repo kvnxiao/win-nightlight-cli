@@ -245,7 +245,8 @@ impl Settings {
         self.sunrise
     }
 
-    /// Return whether the Settings app is previewing a color temperature.
+    /// Return whether preview is on. While preview is on, Windows applies the
+    /// stored color temperature temporarily, even while Night Light is off.
     pub fn is_previewing(&self) -> bool {
         self.previewing
     }

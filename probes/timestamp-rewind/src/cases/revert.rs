@@ -1,5 +1,5 @@
 //! Cases that write the settings below the `Cloud` timestamp and measure how
-//! Windows replaces them. They need no observer.
+//! Windows replaces them. They do not need an observer.
 
 use crate::registry;
 use crate::session::Session;
@@ -10,7 +10,6 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::Duration;
 use win_nightlight_lib::ColorTemperature;
-use win_nightlight_lib::RefreshPolicy;
 
 const REVERT_WATCH: Duration = Duration::from_secs(1);
 const REVERT_POLL: Duration = Duration::from_millis(1);
@@ -68,7 +67,7 @@ pub(crate) fn cloud_boundary(session: &mut Session) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Repeatedly write the settings below `Cloud`, request a complete refresh
+/// Repeatedly write the settings below `Cloud`, make an ordinary refresh
 /// after a growing delay, and count the refreshes Windows overwrites.
 pub(crate) fn refresh_window(session: &mut Session, passes: usize) -> anyhow::Result<()> {
     let mut lost: BTreeMap<u64, (usize, usize)> = BTreeMap::new();
@@ -83,9 +82,7 @@ pub(crate) fn refresh_window(session: &mut Session, passes: usize) -> anyhow::Re
             .context("Cloud timestamp is zero")?;
         registry::write_settings_modified(target)?;
         std::thread::sleep(Duration::from_millis(delay_ms));
-        session
-            .light
-            .set_color_temperature(ColorTemperature::new(kelvin)?, RefreshPolicy::Always)?;
+        registry::ordinary_refresh(&session.light, ColorTemperature::new(kelvin)?)?;
         std::thread::sleep(SETTLE);
         let settled = session.snapshot("round")?;
         let kept = settled.kelvin == Some(kelvin.cast_signed());

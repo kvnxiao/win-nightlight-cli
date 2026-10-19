@@ -4,6 +4,8 @@
 
 pub(crate) mod blocks;
 pub(crate) mod display;
+pub(crate) mod drag;
+pub(crate) mod plain;
 pub(crate) mod revert;
 
 use crate::observer::Observer;
@@ -57,8 +59,6 @@ pub(crate) fn quick_settings_reader(session: &mut Session) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Restart `process`, wait for the shell to settle, and record the new
-/// process IDs.
 fn restart_shell(session: &mut Session, process: ShellProcess) -> anyhow::Result<()> {
     let ids = process.restart()?;
     std::thread::sleep(SHELL_SETTLE);

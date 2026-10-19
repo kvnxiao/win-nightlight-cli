@@ -11,7 +11,7 @@ use std::time::Instant;
 const RELAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 const RELAUNCH_POLL: Duration = Duration::from_millis(200);
 
-/// A process that `explorer.exe` or `sihost.exe` relaunches after it exits.
+/// A Windows shell process that the probe can end and restart.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ShellProcess {
     Explorer,
