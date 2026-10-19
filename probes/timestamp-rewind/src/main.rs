@@ -42,7 +42,7 @@ const SUITE_PAUSE: Duration = Duration::from_secs(2);
 // - The drag cases in part 5 run after parts 1 to 4, because they move the
 //   settings timestamp hours ahead of real time, and `reverts-while-off
 //   --cloud-ahead` waits for real time to pass it.
-const SUITE: [(u8, Case); 29] = [
+const SUITE: [(u8, Case); 30] = [
     (
         1,
         Case::RevertsWhileOff {
@@ -139,6 +139,7 @@ const SUITE: [(u8, Case); 29] = [
     (5, Case::DragRate { rounds: 2 }),
     (5, Case::SliderStamps),
     (5, Case::DragInterference { rate: None }),
+    (5, Case::RestartAfterSlider { rate: None }),
     (5, Case::DragHold),
     (6, Case::PlainWrite { trials: 10 }),
     (6, Case::WriteWhileOff { trials: 5 }),
@@ -276,6 +277,14 @@ enum Case {
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=1000))]
         rate: Option<u32>,
     },
+    /// Hold a slider drag, stop writing when the observer releases the
+    /// Windows Settings slider, then write through a new handle without and
+    /// with the startup margin.
+    RestartAfterSlider {
+        /// Writes per second during the held drag; 240 by default.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=1000))]
+        rate: Option<u32>,
+    },
     /// Hold preview on for two minutes while Night Light is switched off,
     /// Windows Settings opens, and explorer.exe restarts.
     DragHold,
@@ -385,6 +394,11 @@ fn run(case: Case, observer: Observer) -> anyhow::Result<()> {
         Case::DragInterference { rate } => Session::run("drag-interference", observer, |session| {
             cases::drag::drag_interference(session, rate)
         }),
+        Case::RestartAfterSlider { rate } => {
+            Session::run("restart-after-slider", observer, |session| {
+                cases::drag::restart_after_slider(session, rate)
+            })
+        }
         Case::DragHold => Session::run("drag-hold", observer, cases::drag::drag_hold),
         Case::PlainWrite { trials } => Session::run("plain-write", observer, |session| {
             cases::plain::plain_write(session, trials)

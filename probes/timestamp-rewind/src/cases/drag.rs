@@ -10,6 +10,7 @@ use crate::session::Tint;
 use crate::session::say;
 use crate::shell;
 use crate::shell::ShellProcess;
+use crate::snapshot::modified_secs;
 use anyhow::Context as _;
 use serde_json::Value;
 use serde_json::json;
@@ -18,6 +19,7 @@ use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use win_nightlight_lib::ColorTemperature;
+use win_nightlight_lib::Nightlight;
 
 const SHORT_DRAG: Duration = Duration::from_secs(1);
 const LONG_DRAG: Duration = Duration::from_secs(30);
@@ -28,6 +30,11 @@ const INTERFERENCE_DRAG: Duration = Duration::from_secs(30);
 const INTERFERENCE_RATE_HZ: u32 = 30;
 // One period fades from neutral to red and back.
 const INTERFERENCE_PERIOD_SECS: u32 = 10;
+const RESTART_DRAG: Duration = Duration::from_secs(30);
+const RESTART_RATE_HZ: u32 = 240;
+// The fade stays near neutral, so an answer of red or yellow comes from the
+// writes after the release.
+const NEAR_NEUTRAL_KELVIN: u16 = 5500;
 const HOLD: Duration = Duration::from_secs(120);
 const COUNTDOWN: Duration = Duration::from_secs(3);
 const WRITE_LEAD_SECS: u64 = 2;
@@ -116,10 +123,10 @@ fn held_steps(duration: Duration, rate_hz: u32) -> anyhow::Result<u32> {
 }
 
 /// Return the temperature `index` steps of `steps` along a straight line from
-/// `from` to `to`, rounded half up to a multiple of 10 K.
-fn interpolate(from: Tint, to: Tint, index: u32, steps: u32) -> anyhow::Result<ColorTemperature> {
-    let from = i64::from(from.kelvin());
-    let to = i64::from(to.kelvin());
+/// `from` to `to` kelvin, rounded half up to a multiple of 10 K.
+fn interpolate(from: u16, to: u16, index: u32, steps: u32) -> anyhow::Result<ColorTemperature> {
+    let from = i64::from(from);
+    let to = i64::from(to);
     let steps = i64::from(steps);
     let scaled = from * steps + (to - from) * i64::from(index);
     let tens = (2 * scaled + 10 * steps).div_euclid(20 * steps);
@@ -127,7 +134,7 @@ fn interpolate(from: Tint, to: Tint, index: u32, steps: u32) -> anyhow::Result<C
 }
 
 fn neutral_to_red(index: u32, steps: u32) -> anyhow::Result<ColorTemperature> {
-    interpolate(Tint::Neutral, Tint::Red, index, steps)
+    interpolate(Tint::Neutral.kelvin(), Tint::Red.kelvin(), index, steps)
 }
 
 pub(super) fn sleep_until(deadline: Instant) {
@@ -454,7 +461,12 @@ pub(crate) fn drag_interference(session: &mut Session, rate_hz: Option<u32>) -> 
     held_drag(session, INTERFERENCE_DRAG, rate_hz, |index, _steps| {
         let position = index % (2 * half_period);
         let toward_red = half_period - position.abs_diff(half_period);
-        interpolate(Tint::Neutral, Tint::Red, toward_red, half_period)
+        interpolate(
+            Tint::Neutral.kelvin(),
+            Tint::Red.kelvin(),
+            toward_red,
+            half_period,
+        )
     })?;
     session.snapshot("after_interference")?;
     let restore = step_drag(session, ColorTemperature::new(Tint::Yellow.kelvin())?)?;
@@ -465,6 +477,111 @@ pub(crate) fn drag_interference(session: &mut Session, rate_hz: Option<u32>) -> 
         "Per-step drag to yellow after the interference: {}",
         applied_or_ignored(restored)
     ))
+}
+
+/// Hold a slider drag at `rate_hz`, 240 by default, that fades near neutral
+/// while the observer drags and releases the Windows Settings slider. Stop
+/// writing at the release, as an application that exits would. Then make a
+/// per-step drag to red through a new handle and one to yellow through a new
+/// handle with the startup margin, and ask after each which tint shows.
+pub(crate) fn restart_after_slider(
+    session: &mut Session,
+    rate_hz: Option<u32>,
+) -> anyhow::Result<()> {
+    let rate_hz = rate_hz.unwrap_or(RESTART_RATE_HZ);
+    let steps = held_steps(RESTART_DRAG, rate_hz)?;
+    confirm_lead(session, u64::from(steps) + 6)?;
+    session.require_working_display()?;
+    session
+        .wait_for_observer("Open Settings > System > Display > Night light and keep it open.")?;
+    say(&format!(
+        "For up to {} s the probe fades near neutral with preview held on, as a slider drag          does. While it runs, press the Strength slider, drag it for about 3 s, and release it          near its left end within 20 s. The probe stops writing when you release the slider.          Then leave the slider alone until the probe asks a question.",
+        RESTART_DRAG.as_secs()
+    ))?;
+    count_down("the probe's drag begins.")?;
+    let (drag, released) = drag_until_release(session, rate_hz, steps)?;
+    session.record("held_drag", drag)?;
+    session.snapshot("after_release")?;
+    if !released {
+        session.wait_for_observer("Close Settings.")?;
+        return say(
+            "The drag did not stop at a release that left the stored timestamp in place, so the              probe skipped the writes through new handles.",
+        );
+    }
+    session.light = Nightlight::new();
+    let control = step_drag(session, ColorTemperature::new(Tint::Red.kelvin())?)?;
+    session.record("new_handle", control)?;
+    session.snapshot("after_new_handle")?;
+    let control_applied = session.display_shows(Tint::Red, "new_handle")?;
+    session.light = Nightlight::new().with_startup_margin();
+    let margin = step_drag(session, ColorTemperature::new(Tint::Yellow.kelvin())?)?;
+    session.record("new_handle_with_margin", margin)?;
+    session.snapshot("after_new_handle_with_margin")?;
+    let margin_applied = session.display_shows(Tint::Yellow, "new_handle_with_margin")?;
+    session.wait_for_observer("Close Settings.")?;
+    say(&format!(
+        "Per-step drag through a new handle: {}. Through a new handle with the startup margin: {}.",
+        applied_or_ignored(control_applied),
+        applied_or_ignored(margin_applied)
+    ))
+}
+
+/// Make a held drag of `steps` steps at `rate_hz` that fades between neutral
+/// and [`NEAR_NEUTRAL_KELVIN`], and stop without writing again as soon as a
+/// read finds preview off. Return the drag's record and whether it stopped at
+/// a release that the probe did not overwrite.
+fn drag_until_release(
+    session: &mut Session,
+    rate_hz: u32,
+    steps: u32,
+) -> anyhow::Result<(Value, bool)> {
+    let half_period = rate_hz * INTERFERENCE_PERIOD_SECS / 2;
+    let mut log = DragLog::default();
+    let mut highest_written = 0;
+    let mut release = None;
+    let mut overwritten = false;
+    let start_found_preview = session.light.start_preview()?;
+    let started = Instant::now();
+    for index in 1..=steps {
+        session.check_quit()?;
+        sleep_until(started + RESTART_DRAG * index / steps);
+        let stored = session.light.read_settings()?;
+        if !stored.is_previewing() {
+            release = Some((index, modified_secs(&stored)?));
+            break;
+        }
+        let position = index % (2 * half_period);
+        let toward_near_neutral = half_period - position.abs_diff(half_period);
+        let temperature = interpolate(
+            Tint::Neutral.kelvin(),
+            NEAR_NEUTRAL_KELVIN,
+            toward_near_neutral,
+            half_period,
+        )?;
+        let preview_was_on = session.light.preview_color_temperature(temperature)?;
+        log.push(started.elapsed(), preview_was_on);
+        highest_written = highest_written.max(modified_secs(&session.light.read_settings()?)?);
+        // The release came between the read and this write, which turned
+        // preview back on and stamped above the release.
+        if !preview_was_on {
+            overwritten = true;
+            break;
+        }
+    }
+    if release.is_none() && !overwritten {
+        session.light.end_preview()?;
+    }
+    session.note_settings_modified(highest_written);
+    let record = json!({
+        "rate_hz": rate_hz,
+        "start_found_preview": start_found_preview,
+        "release_step": release.map(|(step, _)| step),
+        "release_overwritten": overwritten,
+        "stored_at_release_unix_s": release.map(|(_, stored)| stored),
+        "highest_written_unix_s": highest_written,
+        "log": log.to_json()?,
+    });
+    Ok((record, release.is_some()))
 }
 
 /// Write `tint` while preview stays on, ask whether it applied, and record
@@ -560,15 +677,15 @@ mod tests {
     #[test_case(3, 2530; "rounds 2525 up")]
     #[test_case(4, 1200; "end")]
     fn interpolates_in_10_kelvin_steps(index: u32, kelvin: u16) {
-        let temperature =
-            interpolate(Tint::Neutral, Tint::Red, index, 4).expect("temperature is in range");
+        let temperature = interpolate(Tint::Neutral.kelvin(), Tint::Red.kelvin(), index, 4)
+            .expect("temperature is in range");
         assert_eq!(temperature.kelvin(), kelvin);
     }
 
     #[test]
     fn interpolates_toward_a_warmer_start() {
-        let temperature =
-            interpolate(Tint::Red, Tint::Yellow, 1, 2).expect("temperature is in range");
+        let temperature = interpolate(Tint::Red.kelvin(), Tint::Yellow.kelvin(), 1, 2)
+            .expect("temperature is in range");
         assert_eq!(temperature.kelvin(), 2300);
     }
 

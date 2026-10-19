@@ -4,12 +4,12 @@
 use super::drag::sleep_until;
 use crate::session::Session;
 use crate::session::say;
+use crate::snapshot::modified_secs;
 use crate::snapshot::unix_secs;
 use anyhow::Context as _;
 use serde_json::json;
 use std::time::Duration;
 use std::time::Instant;
-use win_nightlight_lib::Settings;
 
 const WATCHED_DRAGS: u32 = 2;
 const REWRITES: u32 = 10;
@@ -120,11 +120,4 @@ fn drag_during_rewrites(session: &mut Session) -> anyhow::Result<bool> {
         json!({"previewing_after_release": released.previewing}),
     )?;
     Ok(released.previewing)
-}
-
-fn modified_secs(settings: &Settings) -> anyhow::Result<u64> {
-    settings
-        .modified()
-        .context("stored settings timestamp is out of range")
-        .and_then(unix_secs)
 }

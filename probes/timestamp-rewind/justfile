@@ -51,6 +51,9 @@ drag-rate rounds="2": (_run "drag-rate" rounds)
 drag-interference *flags:
     {{probe}} drag-interference {{flags}} || [ $? -eq 3 ]
 
+restart-after-slider *flags:
+    {{probe}} restart-after-slider {{flags}} || [ $? -eq 3 ]
+
 drag-hold: (_run "drag-hold")
 
 plain-write trials="10": (_run "plain-write" trials)

@@ -10,6 +10,7 @@ use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use win_nightlight_lib::Nightlight;
+use win_nightlight_lib::Settings;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Snapshot {
@@ -23,13 +24,9 @@ pub(crate) struct Snapshot {
 impl Snapshot {
     pub(crate) fn read(light: &Nightlight) -> anyhow::Result<Self> {
         let settings = light.read_settings()?;
-        let settings_modified = settings
-            .modified()
-            .context("stored settings timestamp is out of range")
-            .and_then(unix_secs)?;
         Ok(Self {
             read_at: SystemTime::now(),
-            settings_modified,
+            settings_modified: modified_secs(&settings)?,
             cloud_modified: registry::read_cloud_modified()?,
             kelvin: settings.color_temperature(),
             previewing: settings.is_previewing(),
@@ -93,6 +90,13 @@ pub(crate) fn changes(
 
 pub(crate) fn unix_secs(time: SystemTime) -> anyhow::Result<u64> {
     Ok(time.duration_since(UNIX_EPOCH)?.as_secs())
+}
+
+pub(crate) fn modified_secs(settings: &Settings) -> anyhow::Result<u64> {
+    settings
+        .modified()
+        .context("stored settings timestamp is out of range")
+        .and_then(unix_secs)
 }
 
 fn unix_secs_f64(time: SystemTime) -> anyhow::Result<f64> {

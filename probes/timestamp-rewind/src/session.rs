@@ -184,6 +184,12 @@ impl Session {
         self.highest_modified
     }
 
+    /// Count `modified`, a settings timestamp the case wrote without a
+    /// snapshot, so that [`restore`](Self::restore) stamps above it.
+    pub(crate) fn note_settings_modified(&mut self, modified: u64) {
+        self.highest_modified = self.highest_modified.max(modified);
+    }
+
     /// Store `modified` as the settings timestamp, even below the stored one,
     /// and replace the library handle.
     pub(crate) fn rewind_settings_timestamp(&mut self, modified: u64) -> anyhow::Result<()> {
