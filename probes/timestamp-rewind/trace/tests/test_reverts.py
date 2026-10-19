@@ -1,9 +1,8 @@
-import json
 from datetime import UTC, datetime
 
 import pytest
 
-from rewind_trace.reverts import RevertReport, find_reverts, format_report, run_window
+from rewind_trace.reverts import RevertReport, find_reverts, format_report
 from rewind_trace.summary import Operation, Record, Store, SummaryRow
 
 CLOUD = 1000
@@ -78,33 +77,6 @@ def test_ignores_writes_before_cloud_is_known() -> None:
     report = find_reverts(ROWS[1:], None)
     assert report.below_cloud == 0
     assert report.delays == {}
-
-
-def test_reads_window_from_first_and_last_records() -> None:
-    lines = [
-        json.dumps({"event": "start", "utc": "2026-10-19T02:10:01.1234567Z"}),
-        json.dumps({"event": "restored", "utc": "2026-10-19T02:10:09Z"}),
-    ]
-    assert run_window(lines) == (
-        datetime(2026, 10, 19, 2, 10, 1, 123456, tzinfo=UTC),
-        at(9),
-    )
-
-
-@pytest.mark.parametrize(
-    ("lines", "message"),
-    [
-        pytest.param([], "results file has no records", id="empty"),
-        pytest.param(
-            [json.dumps({"event": "sample"})],
-            "results record lacks the field 'utc'",
-            id="no-utc",
-        ),
-    ],
-)
-def test_rejects_results_without_times(lines: list[str], message: str) -> None:
-    with pytest.raises(ValueError, match=message):
-        run_window(lines)
 
 
 def test_formats_report_with_late_reverts() -> None:

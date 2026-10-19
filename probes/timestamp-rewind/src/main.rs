@@ -28,15 +28,21 @@ use std::time::Duration;
 const DEFAULT_BURST: u32 = 256;
 // The justfile recipes treat this exit code as success.
 const QUIT_EXIT_CODE: u8 = 3;
-const SUITE_PARTS: u8 = 4;
+const SUITE_PARTS: u8 = 6;
 const SUITE_PAUSE: Duration = Duration::from_secs(2);
 // Every case in the order the suite runs it, with its part. The order keeps
 // cases from changing each other's conditions:
-// - The `Cloud`-ahead replay runs first, while the stored timestamp is close to
-//   real time, because it waits for real time to pass the stored timestamp.
-// - Cases that write `Cloud`, or ask for a slider write, run last, because they
-//   change the timestamp that writes below `Cloud` revert to.
-const SUITE: [(u8, Case); 22] = [
+// - `reverts-while-off --cloud-ahead` runs first, while the stored timestamp is
+//   close to real time, because it waits for real time to pass the stored
+//   timestamp.
+// - Apart from the slider writes that `reverts-while-off` asks for, cases that
+//   write `Cloud` or ask for a slider write run in parts 4 and 5. They run
+//   after every case that writes below `Cloud`, because they change the
+//   timestamp that writes below `Cloud` revert to.
+// - The drag cases in part 5 run after parts 1 to 4, because they move the
+//   settings timestamp hours ahead of real time, and `reverts-while-off
+//   --cloud-ahead` waits for real time to pass it.
+const SUITE: [(u8, Case); 30] = [
     (
         1,
         Case::RevertsWhileOff {
@@ -129,6 +135,14 @@ const SUITE: [(u8, Case); 22] = [
     (4, Case::LowerCloud),
     (4, Case::ResetBoth),
     (4, Case::RestartExplorer),
+    (5, Case::DragFade { rate: None }),
+    (5, Case::DragRate { rounds: 2 }),
+    (5, Case::SliderStamps),
+    (5, Case::DragInterference { rate: None }),
+    (5, Case::RestartAfterSlider { rate: None }),
+    (5, Case::DragHold),
+    (6, Case::PlainWrite { trials: 10 }),
+    (6, Case::WriteWhileOff { trials: 5 }),
 ];
 
 #[derive(Debug, Parser)]
@@ -222,9 +236,9 @@ enum Case {
     },
     /// Check whether a stale-timestamp block survives an explorer.exe restart.
     StaleTimestampSurvivesRestart,
-    /// Write below Cloud twice, which Windows reverts, with Night Light off,
-    /// switch it on, and check whether refreshes below and above the burst
-    /// peak apply.
+    /// Twice write below Cloud, which Windows reverts, refresh, and switch
+    /// Night Light off. Then switch it on and check whether refreshes below and
+    /// above the burst peak apply.
     RevertsWhileOff {
         /// Refreshes that advance the timestamp before the reverts.
         #[arg(default_value_t = DEFAULT_BURST)]
@@ -237,10 +251,61 @@ enum Case {
     /// Restart ShellHost.exe, then refresh and revert before and after Quick
     /// Settings opens, to trace when ShellHost.exe reads the settings.
     QuickSettingsReader,
+    /// Fade from neutral to red with held and per-step slider drags, before
+    /// and after an explorer.exe restart, and ask how each fade looked.
+    DragFade {
+        /// Writes per second during held drags; by default, the refresh rate
+        /// of the fastest active display.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=1000))]
+        rate: Option<u32>,
+    },
+    /// Make 1-second held drags at several write rates in random order, and
+    /// ask how each fade looked without naming its rate.
+    DragRate {
+        /// How many times to try each rate.
+        #[arg(default_value_t = 2)]
+        rounds: u32,
+    },
+    /// Watch the observer drag the Windows Settings slider, with and without
+    /// probe writes, and switch Night Light in Quick Settings and Windows
+    /// Settings, for a trace of how Windows stamps those writes.
+    SliderStamps,
+    /// Hold a slider drag while the observer drags the Windows Settings
+    /// slider, then restore the probe's temperature with a per-step drag.
+    DragInterference {
+        /// Writes per second during the held drag; 30 by default.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=1000))]
+        rate: Option<u32>,
+    },
+    /// Hold a slider drag, stop writing when the observer releases the
+    /// Windows Settings slider, then write through a new handle without and
+    /// with the startup margin.
+    RestartAfterSlider {
+        /// Writes per second during the held drag; 240 by default.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=1000))]
+        rate: Option<u32>,
+    },
+    /// Hold preview on for two minutes while Night Light is switched off,
+    /// Windows Settings opens, and explorer.exe restarts.
+    DragHold,
+    /// Fade with writes without preview 3 s apart, then make such writes in
+    /// four display conditions.
+    PlainWrite {
+        /// Trials in each condition.
+        #[arg(default_value_t = 10)]
+        trials: u32,
+    },
+    /// Switch Night Light off, store another tint without preview, switch
+    /// Night Light on, and ask whether the stored tint shows.
+    WriteWhileOff {
+        /// How many times to repeat the check.
+        #[arg(default_value_t = 5)]
+        trials: u32,
+    },
     /// Run one part of the suite, which runs every case except watch in a
     /// fixed order.
     Suite {
-        /// Which part to run, from 1 to 4.
+        /// Which part to run, from 1 to 6.
         #[arg(value_parser = clap::value_parser!(u8).range(1..=i64::from(SUITE_PARTS)))]
         part: u8,
         /// The step of the part to start at.
@@ -319,6 +384,28 @@ fn run(case: Case, observer: Observer) -> anyhow::Result<()> {
             observer,
             cases::quick_settings_reader,
         ),
+        Case::DragFade { rate } => Session::run("drag-fade", observer, |session| {
+            cases::drag::drag_fade(session, rate)
+        }),
+        Case::DragRate { rounds } => Session::run("drag-rate", observer, |session| {
+            cases::drag::drag_rate(session, rounds)
+        }),
+        Case::SliderStamps => Session::run("slider-stamps", observer, cases::slider::slider_stamps),
+        Case::DragInterference { rate } => Session::run("drag-interference", observer, |session| {
+            cases::drag::drag_interference(session, rate)
+        }),
+        Case::RestartAfterSlider { rate } => {
+            Session::run("restart-after-slider", observer, |session| {
+                cases::drag::restart_after_slider(session, rate)
+            })
+        }
+        Case::DragHold => Session::run("drag-hold", observer, cases::drag::drag_hold),
+        Case::PlainWrite { trials } => Session::run("plain-write", observer, |session| {
+            cases::plain::plain_write(session, trials)
+        }),
+        Case::WriteWhileOff { trials } => Session::run("write-while-off", observer, |session| {
+            cases::plain::write_while_off(session, trials)
+        }),
         Case::Suite { part, from } => run_suite(part, from, &observer),
     }
 }

@@ -2,34 +2,55 @@ use crate::ColorTemperature;
 use crate::Result;
 use crate::Settings;
 use crate::State;
+use crate::cloudstore::MIN_MODIFIED_STEP_SECS;
 use crate::error::Repr;
 use crate::store::Key;
 use crate::store::RegistryStore;
 use crate::store::Store;
 use std::fmt;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::PoisonError;
+use std::time::Duration;
 use std::time::SystemTime;
 
 const READ_ATTEMPTS: usize = 3;
-
-/// Select when a temperature update requests a preview refresh.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RefreshPolicy {
-    /// Preserve existing preview; otherwise refresh only while Night Light is
-    /// active.
-    Automatic,
-    /// Request preview on and off on every call, regardless of active state or
-    /// existing preview.
-    Always,
-}
+const CLEANUP_ATTEMPTS: usize = 3;
+// After an `explorer.exe` restart, Windows ignores settings writes until a
+// preview stays on for about 9 ms or longer. A click on the Windows Settings
+// slider keeps preview on for 51 to 97 ms.
+const APPLY_PREVIEW_HOLD: Duration = Duration::from_millis(50);
+// Windows Settings stamps each slider write 2 s after its own previous write
+// or a value it read, so a slider write can follow from a read made this long
+// before it during a fade. Meanwhile, a fade at the transitions guide's cap of
+// 240 writes per second raises the highest timestamp 2 s per write, so a
+// slider write can store a timestamp up to about the margin below it.
+const SLIDER_STALE_READ_MS: u64 = 1456;
+const MAX_FADE_WRITES_PER_SEC: u64 = 240;
+const STARTUP_MARGIN_SECS: u64 =
+    (MIN_MODIFIED_STEP_SECS * MAX_FADE_WRITES_PER_SEC * SLIDER_STALE_READ_MS).div_ceil(1000);
 
 /// Handle to the current user's Night Light settings and state.
 ///
 /// Settings (schedule and color temperature) and state (whether Night Light
 /// is on) are separate registry values. Temperature updates can read both
 /// values and write only settings; on/off updates write only state.
+///
+/// Each handle records the highest timestamp it has written to each value
+/// and stamps later writes above it. Writes of one value through one handle
+/// run one at a time, so their timestamps increase even when threads share
+/// the handle. Keep one handle for the application's lifetime and share it
+/// across threads, for example through an `Arc`.
 pub struct Nightlight {
     store: Box<dyn Store + Send + Sync>,
     clock: fn() -> SystemTime,
+    sleep: fn(Duration),
+    startup_margin: bool,
+    // The highest timestamp written to each value, or 0 before the first
+    // write. Each write holds the lock from stamping until it records the
+    // new timestamp, so two threads cannot stamp the same timestamp.
+    settings_written: Mutex<u64>,
+    state_written: Mutex<u64>,
 }
 
 impl Nightlight {
@@ -45,7 +66,33 @@ impl Nightlight {
         Self {
             store: Box::new(store),
             clock,
+            sleep: std::thread::sleep,
+            startup_margin: false,
+            settings_written: Mutex::new(0),
+            state_written: Mutex::new(0),
         }
+    }
+
+    /// Stamp this handle's settings writes at least 699 s after the stored
+    /// timestamp until one succeeds.
+    ///
+    /// `explorer.exe` ignores settings writes stamped at or below the highest
+    /// timestamp it has applied, and the registry does not store that
+    /// timestamp. After the user drags the slider in Windows Settings during a
+    /// fade, the stored timestamp can be below it, by up to 90 s in fades
+    /// measured at 30 to 240 writes per second. A handle that has not written
+    /// yet cannot tell how far below it the stored timestamp is. The margin is
+    /// an estimate of the worst case for fades of up to 240 writes per second,
+    /// not a bound.
+    ///
+    /// - Later writes follow [`write_settings`](Self::write_settings).
+    /// - The state value does not get the margin.
+    /// - Each handle that uses the margin adds up to 699 s to the settings
+    ///   timestamp's lead over real time.
+    #[must_use]
+    pub fn with_startup_margin(mut self) -> Self {
+        self.startup_margin = true;
+        self
     }
 
     /// Read the current settings.
@@ -67,10 +114,15 @@ impl Nightlight {
 
     /// Write `settings` with a new last-modified time.
     ///
-    /// The new last-modified time is the current time, or two seconds after
-    /// the time stored in `settings` if that is later. The time never moves
-    /// backward, because `explorer.exe` does not apply settings stamped at or
-    /// below the highest time it has applied.
+    /// The new last-modified time is the latest of the current time, two
+    /// seconds after the time stored in `settings`, and two seconds after the
+    /// highest time this handle has written to the settings.
+    /// [`with_startup_margin`](Self::with_startup_margin) raises the first
+    /// write further. The time never moves backward, because `explorer.exe`
+    /// does not apply settings stamped at or below the highest time it has
+    /// applied. Another writer, such as the slider in Windows Settings, can
+    /// store a lower time; this handle's next write is still stamped above
+    /// its own earlier writes.
     ///
     /// # Errors
     ///
@@ -85,8 +137,20 @@ impl Nightlight {
     /// [`ErrorKind::Registry`]: crate::ErrorKind::Registry
     pub fn write_settings(&self, settings: &Settings) -> Result<()> {
         let mut settings = settings.clone();
-        settings.stamp((self.clock)());
-        self.write(Key::Settings, &settings.to_bytes()?)
+        let mut highest = lock(&self.settings_written);
+        let step_secs = if self.startup_margin && *highest == 0 {
+            STARTUP_MARGIN_SECS
+        } else {
+            MIN_MODIFIED_STEP_SECS
+        };
+        let modified = settings.stamp(
+            (self.clock)(),
+            step_secs,
+            highest.saturating_add(MIN_MODIFIED_STEP_SECS),
+        );
+        self.write(Key::Settings, &settings.to_bytes()?)?;
+        *highest = modified;
+        Ok(())
     }
 
     /// Read the settings, apply `change`, and write them back if `change`
@@ -109,71 +173,153 @@ impl Nightlight {
         Ok(true)
     }
 
-    /// Set the color temperature with the selected preview refresh policy.
+    /// Store `temperature` in one write, without preview.
     ///
-    /// - With [`RefreshPolicy::Automatic`], preserve existing preview;
-    ///   otherwise refresh while active, or only store a changed temperature
-    ///   while inactive.
-    /// - With [`RefreshPolicy::Always`], write the temperature with preview on,
-    ///   then reread settings and clear preview, even when both values already
-    ///   match. Do not read or write the on/off state.
-    /// - Refresh without a sleep. Each write advances the supplied record's
-    ///   timestamp by at least two seconds unless it saturates at `u64::MAX`.
-    /// - Return whether settings were written; a successful `Always` call
-    ///   returns `true`. Neither policy writes the on/off state.
-    /// - Cleanup preserves intervening settings changes, including temperature.
-    ///   Writes are not atomic with other writers; avoid overlapping calls and
-    ///   native slider interaction.
-    /// - Successful writes do not acknowledge a display update. Windows may
-    ///   combine notifications for the two writes.
+    /// While Night Light is on, Windows applies the stored temperature, except
+    /// after an `explorer.exe` restart, when it ignores such writes until a
+    /// preview stays on for about 9 ms or longer.
+    /// [`apply_color_temperature`](Self::apply_color_temperature) makes such a
+    /// preview.
+    ///
+    /// - Return whether it wrote the settings; it does not write when the
+    ///   temperature is already stored.
+    /// - Each write advances the settings timestamp by at least two seconds.
+    /// - Do not sleep, do not change preview, and do not read or write the
+    ///   on/off state.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error of [`update_settings`](Self::update_settings).
+    pub fn set_color_temperature(&self, temperature: ColorTemperature) -> Result<bool> {
+        self.update_settings(|settings| settings.set_color_temperature(temperature))
+    }
+
+    /// Show `temperature` now while Night Light is on, or store it for when
+    /// Night Light turns on, and end any preview.
+    ///
+    /// - Read the settings and the on/off state before writing.
+    /// - While Night Light is on, write `temperature` with preview on, wait 50
+    ///   ms, then turn preview off. Windows applies a preview this long even
+    ///   after an `explorer.exe` restart; a click on the Night Light slider in
+    ///   Windows Settings keeps preview on for a similar 51 to 97 ms. The call
+    ///   blocks the thread for the wait, so run it on a blocking thread in
+    ///   async code.
+    /// - While Night Light is off, store `temperature` with preview off in one
+    ///   write, so the screen stays untinted. Do not write when both are
+    ///   already stored.
+    /// - Return whether preview was on before the call, for example during a
+    ///   fade or a slider drag in Windows Settings; this call ends it.
+    /// - Each write advances the settings timestamp by at least two seconds.
     ///
     /// # Errors
     ///
     /// - Return any error of [`read_settings`](Self::read_settings),
     ///   [`read_state`](Self::read_state), or
     ///   [`write_settings`](Self::write_settings).
-    /// - Return [`ErrorKind::PreviewCleanup`] if three attempts to clear
-    ///   preview after writing the temperature fail. Preview may remain active;
-    ///   the source records the last cleanup error. A later `Always` call
-    ///   repeats the complete refresh.
+    /// - Return [`ErrorKind::PreviewCleanup`] if turning preview off after the
+    ///   wait fails three times in a row, without waiting between attempts.
+    ///   Preview may stay on, and while it does, Windows shows the stored
+    ///   temperature even while Night Light is off. The error's source is the
+    ///   last failure. Calling this method again repeats the whole sequence.
     ///
     /// [`ErrorKind::PreviewCleanup`]: crate::ErrorKind::PreviewCleanup
-    pub fn set_color_temperature(
-        &self,
-        temperature: ColorTemperature,
-        refresh: RefreshPolicy,
-    ) -> Result<bool> {
-        let mut settings = self.read_settings()?;
-        let changed = settings.color_temperature() != Some(temperature.kelvin().cast_signed());
-        let start_preview = match refresh {
-            RefreshPolicy::Automatic => !settings.is_previewing() && self.read_state()?.is_active(),
-            RefreshPolicy::Always => true,
-        };
-        if !changed && !start_preview {
-            return Ok(false);
-        }
+    pub fn apply_color_temperature(&self, temperature: ColorTemperature) -> Result<bool> {
+        let current = self.read_settings()?;
+        let active = self.read_state()?.is_active();
+        let mut settings = current.clone();
         settings.set_color_temperature(temperature);
-        if start_preview {
-            settings.set_previewing(true);
+        settings.set_previewing(active);
+        if active {
+            self.write_settings(&settings)?;
+            (self.sleep)(APPLY_PREVIEW_HOLD);
+            self.clear_preview()?;
+        } else if settings != current {
+            self.write_settings(&settings)?;
         }
-        self.write_settings(&settings)?;
-        if !start_preview {
-            return Ok(true);
-        }
-        let mut attempts_left = 3;
+        Ok(current.is_previewing())
+    }
+
+    fn clear_preview(&self) -> Result<()> {
+        let mut attempt = 1;
         loop {
-            attempts_left -= 1;
             match self.update_settings(|settings| settings.set_previewing(false)) {
-                Ok(_) => return Ok(true),
-                Err(source) if attempts_left == 0 => {
+                Ok(_) => return Ok(()),
+                Err(source) if attempt == CLEANUP_ATTEMPTS => {
                     return Err(Repr::PreviewCleanup {
                         source: Box::new(source),
                     }
                     .into());
                 }
-                Err(_) => {}
+                Err(_) => attempt += 1,
             }
         }
+    }
+
+    /// Turn preview on without changing the temperature, as pressing the
+    /// Night Light slider in Windows Settings does.
+    ///
+    /// While preview is on, Windows applies the stored temperature, even while
+    /// Night Light is off. Change it with
+    /// [`preview_color_temperature`](Self::preview_color_temperature) and turn
+    /// preview off with [`end_preview`](Self::end_preview).
+    ///
+    /// - Return whether preview was already on.
+    /// - Write even when preview is already on. Each write advances the
+    ///   settings timestamp by at least two seconds.
+    /// - Do not sleep, and do not read or write the on/off state.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error of [`read_settings`](Self::read_settings) or
+    /// [`write_settings`](Self::write_settings).
+    pub fn start_preview(&self) -> Result<bool> {
+        self.write_preview(|settings| settings.set_previewing(true))
+    }
+
+    /// Write `temperature` with preview on, as dragging the Night Light slider
+    /// in Windows Settings does.
+    ///
+    /// - Return whether preview was already on. `false` means that preview was
+    ///   off before this call, for example because another writer ended it;
+    ///   this call turns it back on.
+    /// - Write even when the temperature and preview already match. Each write
+    ///   advances the settings timestamp by at least two seconds.
+    /// - Do not sleep, and do not read or write the on/off state.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error of [`read_settings`](Self::read_settings) or
+    /// [`write_settings`](Self::write_settings).
+    pub fn preview_color_temperature(&self, temperature: ColorTemperature) -> Result<bool> {
+        self.write_preview(|settings| {
+            settings.set_color_temperature(temperature);
+            settings.set_previewing(true);
+        })
+    }
+
+    /// Turn preview off and keep the temperature, as releasing the Night
+    /// Light slider in Windows Settings does.
+    ///
+    /// - Return whether preview was on.
+    /// - Write even when preview is already off, in one attempt. Each write
+    ///   advances the settings timestamp by at least two seconds.
+    /// - Do not sleep, and do not read or write the on/off state.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error of [`read_settings`](Self::read_settings) or
+    /// [`write_settings`](Self::write_settings). A failed write does not
+    /// change the stored settings, so preview stays on if it was on.
+    pub fn end_preview(&self) -> Result<bool> {
+        self.write_preview(|settings| settings.set_previewing(false))
+    }
+
+    fn write_preview(&self, change: impl FnOnce(&mut Settings)) -> Result<bool> {
+        let mut settings = self.read_settings()?;
+        let was_previewing = settings.is_previewing();
+        change(&mut settings);
+        self.write_settings(&settings)?;
+        Ok(was_previewing)
     }
 
     /// Read the current state.
@@ -196,9 +342,10 @@ impl Nightlight {
     /// Write `state` with a new last-modified time.
     ///
     /// The last-modified time follows the same rule as
-    /// [`write_settings`](Self::write_settings). This does not record a
-    /// transition; use [`update_state`](Self::update_state) to turn Night
-    /// Light on or off.
+    /// [`write_settings`](Self::write_settings), with a separate record of the
+    /// highest time this handle has written to the state and without the
+    /// startup margin. This does not record a transition; use
+    /// [`update_state`](Self::update_state) to turn Night Light on or off.
     ///
     /// # Errors
     ///
@@ -271,8 +418,11 @@ impl Nightlight {
 
     fn write_state_at(&self, state: &State, now: SystemTime) -> Result<()> {
         let mut state = state.clone();
-        state.stamp(now);
-        self.write(Key::State, &state.to_bytes()?)
+        let mut highest = lock(&self.state_written);
+        let modified = state.stamp(now, highest.saturating_add(MIN_MODIFIED_STEP_SECS));
+        self.write(Key::State, &state.to_bytes()?)?;
+        *highest = modified;
+        Ok(())
     }
 
     // `windows-registry` sizes its buffer with one query and fills it with a
@@ -314,6 +464,12 @@ impl fmt::Debug for Nightlight {
     }
 }
 
+// A panic while the lock is held cannot leave the timestamp half-updated, so
+// a poisoned lock still holds a valid value.
+fn lock(highest: &Mutex<u64>) -> MutexGuard<'_, u64> {
+    highest.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +482,7 @@ mod tests {
     use crate::fixtures;
     use crate::store::memory::MemoryStore;
     use hex_literal::hex;
+    use std::cell::RefCell;
     use std::time::Duration;
     use std::time::UNIX_EPOCH;
     use test_case::test_case;
@@ -439,40 +596,114 @@ mod tests {
         assert_eq!(store.writes(), [Key::State, Key::State]);
     }
 
+    thread_local! {
+        static SLEEPS: RefCell<Vec<Duration>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn record_sleep(duration: Duration) {
+        SLEEPS.with_borrow_mut(|sleeps| sleeps.push(duration));
+    }
+
+    fn sleeps() -> Vec<Duration> {
+        SLEEPS.with_borrow(Clone::clone)
+    }
+
+    fn applying_with_store(store: &MemoryStore, clock: fn() -> SystemTime) -> Nightlight {
+        // libtest runs a test on the current thread when it cannot spawn one,
+        // so an earlier test's sleeps can remain.
+        SLEEPS.with_borrow_mut(Vec::clear);
+        Nightlight {
+            sleep: record_sleep,
+            ..Nightlight::with_store(store.clone(), clock)
+        }
+    }
+
+    fn written_settings(store: &MemoryStore) -> Vec<(bool, Option<i16>, Option<SystemTime>)> {
+        store
+            .write_attempts()
+            .iter()
+            .map(|(key, bytes)| {
+                assert_eq!(*key, Key::Settings);
+                let settings = Settings::from_bytes(bytes).expect("written settings decode");
+                (
+                    settings.is_previewing(),
+                    settings.color_temperature(),
+                    settings.modified(),
+                )
+            })
+            .collect()
+    }
+
+    fn at(seconds: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(seconds)
+    }
+
     #[test]
-    fn color_temperature_change_writes_only_settings() {
-        let (nightlight, store) = nightlight(fixtures::STATE_INACTIVE, clock);
+    fn set_color_temperature_writes_only_settings_without_preview() {
+        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
         let temperature = ColorTemperature::new(3400).expect("3400K is in range");
         assert!(
             nightlight
-                .update_settings(|settings| settings.set_color_temperature(temperature))
-                .expect("settings update")
+                .set_color_temperature(temperature)
+                .expect("temperature is stored")
         );
-
-        assert_eq!(store.writes(), [Key::Settings]);
-        let settings = stored_settings(&store);
-        assert_eq!(settings.color_temperature(), Some(3400));
-        assert_eq!(
-            settings.modified(),
-            Some(UNIX_EPOCH + Duration::from_secs(CLOCK_SECS))
-        );
+        assert_eq!(store.write_attempts(), vec![(
+            Key::Settings,
+            hex!(
+                "43420100 0A020100 2A 0680A4A7DA06 2A 2B0E26"
+                "43420100 0201 C20A00 CA140E012E0F00 CA1E00 CF289035 CA320E132E1700 CA3C0E072E0C00 00"
+                "00 00 00"
+            )
+            .to_vec()
+        )]);
+        assert_eq!(store.reads(), [Key::Settings]);
         assert_eq!(
             store.value(Key::State).as_deref(),
-            Some(fixtures::STATE_INACTIVE)
+            Some(fixtures::STATE_ACTIVE)
         );
+    }
+
+    #[test]
+    fn set_color_temperature_does_not_write_unchanged_temperature() {
+        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+        let temperature = ColorTemperature::new(2790).expect("2790K is in range");
+        assert!(
+            !nightlight
+                .set_color_temperature(temperature)
+                .expect("settings read")
+        );
+        assert_eq!(store.writes(), []);
+    }
+
+    #[test]
+    fn set_color_temperature_keeps_preview_without_reading_state() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_PREVIEWING)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        let temperature = ColorTemperature::new(3400).expect("3400K is in range");
+        assert!(
+            nightlight
+                .set_color_temperature(temperature)
+                .expect("temperature is stored")
+        );
+        let settings = stored_settings(&store);
+        assert!(settings.is_previewing());
+        assert_eq!(settings.color_temperature(), Some(3400));
+        assert_eq!(store.reads(), [Key::Settings]);
     }
 
     #[test_case(fixtures::STATE_ACTIVE; "manual activation")]
     #[test_case(fixtures::STATE_ACTIVE_SCHEDULED; "scheduled activation")]
-    fn active_temperature_update_writes_preview_then_clears_it(state: &[u8]) {
-        let (nightlight, store) = nightlight(state, clock);
+    fn apply_while_active_writes_preview_then_ends_it(state: &[u8]) {
+        let store = MemoryStore::with(&[
+            (Key::Settings, fixtures::SETTINGS_SET_HOURS),
+            (Key::State, state),
+        ]);
+        let nightlight = applying_with_store(&store, clock);
+        let temperature = ColorTemperature::new(3400).expect("3400K is in range");
         assert!(
-            nightlight
-                .set_color_temperature(
-                    "3400".parse().expect("valid temperature"),
-                    RefreshPolicy::Automatic
-                )
-                .expect("temperature updates")
+            !nightlight
+                .apply_color_temperature(temperature)
+                .expect("temperature applies")
         );
         assert_eq!(store.write_attempts(), vec![
             (Key::Settings, hex!(
@@ -486,36 +717,79 @@ mod tests {
                 "00 00 00"
             ).to_vec()),
         ]);
-        assert_eq!(store.value(Key::State).as_deref(), Some(state));
+        assert_eq!(sleeps(), [Duration::from_millis(50)]);
         assert_eq!(store.reads(), [Key::Settings, Key::State, Key::Settings]);
+        assert_eq!(store.value(Key::State).as_deref(), Some(state));
     }
 
-    #[test_case(fixtures::SETTINGS_SET_HOURS; "schedule enabled")]
-    #[test_case(fixtures::SETTINGS_LIVE; "schedule off")]
-    fn inactive_temperature_update_does_not_start_preview(initial: &[u8]) {
+    #[test_case(fixtures::SETTINGS_SET_HOURS, 2790, false; "unchanged temperature")]
+    #[test_case(fixtures::SETTINGS_PREVIEWING, 2790, true; "preview on with unchanged temperature")]
+    #[test_case(fixtures::SETTINGS_PREVIEWING, 3400, true; "preview on with changed temperature")]
+    #[test_case(fixtures::SETTINGS_PREVIEWING, 1200, true; "minimum temperature")]
+    #[test_case(fixtures::SETTINGS_PREVIEWING, 6500, true; "maximum temperature")]
+    fn apply_while_active_always_writes_and_ends_preview(
+        initial: &[u8],
+        kelvin: u16,
+        was_previewing: bool,
+    ) {
+        let store = MemoryStore::with(&[
+            (Key::Settings, initial),
+            (Key::State, fixtures::STATE_ACTIVE),
+        ]);
+        let nightlight = applying_with_store(&store, clock);
+        let temperature = ColorTemperature::new(kelvin).expect("temperature is in range");
+        assert_eq!(
+            nightlight
+                .apply_color_temperature(temperature)
+                .expect("temperature applies"),
+            was_previewing
+        );
+        let kelvin = Some(kelvin.cast_signed());
+        assert_eq!(
+            written_settings(&store),
+            [
+                (true, kelvin, Some(at(1_800_000_000))),
+                (false, kelvin, Some(at(1_800_000_002))),
+            ]
+        );
+        assert_eq!(stored_settings(&store).mode(), ScheduleMode::SetHours);
+        assert_eq!(sleeps(), [Duration::from_millis(50)]);
+    }
+
+    #[test_case(fixtures::SETTINGS_SET_HOURS, 3400, false, 1; "changed temperature")]
+    #[test_case(fixtures::SETTINGS_SET_HOURS, 2790, false, 0; "unchanged temperature")]
+    #[test_case(fixtures::SETTINGS_PREVIEWING, 3400, true, 1; "preview on with changed temperature")]
+    #[test_case(fixtures::SETTINGS_PREVIEWING, 2790, true, 1; "preview on with unchanged temperature")]
+    #[test_case(fixtures::SETTINGS_LIVE, 3400, false, 1; "schedule off")]
+    fn apply_while_inactive_stores_temperature_with_preview_off(
+        initial: &[u8],
+        kelvin: u16,
+        was_previewing: bool,
+        writes: usize,
+    ) {
         let store = MemoryStore::with(&[
             (Key::Settings, initial),
             (Key::State, fixtures::STATE_INACTIVE),
         ]);
-        let nightlight = Nightlight::with_store(store.clone(), clock);
-        assert!(
+        let nightlight = applying_with_store(&store, clock);
+        let temperature = ColorTemperature::new(kelvin).expect("temperature is in range");
+        assert_eq!(
             nightlight
-                .set_color_temperature(
-                    "3400".parse().expect("valid temperature"),
-                    RefreshPolicy::Automatic
-                )
-                .expect("temperature updates")
+                .apply_color_temperature(temperature)
+                .expect("temperature is stored"),
+            was_previewing
         );
-        assert_eq!(store.writes(), [Key::Settings]);
+        assert_eq!(store.writes().len(), writes);
         let settings = stored_settings(&store);
-        assert_eq!(settings.color_temperature(), Some(3400));
         assert!(!settings.is_previewing());
+        assert_eq!(settings.color_temperature(), Some(kelvin.cast_signed()));
         assert_eq!(
             settings.mode(),
             Settings::from_bytes(initial)
                 .expect("initial settings decode")
                 .mode()
         );
+        assert_eq!(sleeps(), []);
         assert_eq!(
             store.value(Key::State).as_deref(),
             Some(fixtures::STATE_INACTIVE)
@@ -523,320 +797,74 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_inactive_temperature_does_not_write() {
-        let (nightlight, store) = nightlight(fixtures::STATE_INACTIVE, clock);
-        assert!(
-            !nightlight
-                .set_color_temperature(
-                    "2790".parse().expect("valid temperature"),
-                    RefreshPolicy::Automatic
-                )
-                .expect("settings read")
-        );
-        assert_eq!(store.writes(), []);
-    }
-
-    #[test_case(fixtures::SETTINGS_PREVIEWING, fixtures::STATE_ACTIVE, 2790; "preview on active same")]
-    #[test_case(fixtures::SETTINGS_PREVIEWING, fixtures::STATE_ACTIVE, 3400; "preview on active changed")]
-    #[test_case(fixtures::SETTINGS_PREVIEWING, fixtures::STATE_INACTIVE, 2790; "preview on inactive same")]
-    #[test_case(fixtures::SETTINGS_PREVIEWING, fixtures::STATE_INACTIVE, 3400; "preview on inactive changed")]
-    #[test_case(fixtures::SETTINGS_SET_HOURS, fixtures::STATE_ACTIVE, 2790; "preview off active same")]
-    #[test_case(fixtures::SETTINGS_SET_HOURS, fixtures::STATE_ACTIVE, 3400; "preview off active changed")]
-    #[test_case(fixtures::SETTINGS_SET_HOURS, fixtures::STATE_INACTIVE, 2790; "preview off inactive same")]
-    #[test_case(fixtures::SETTINGS_SET_HOURS, fixtures::STATE_INACTIVE, 3400; "preview off inactive changed")]
-    #[test_case(fixtures::SETTINGS_PREVIEWING, fixtures::STATE_INACTIVE, 1200; "minimum temperature")]
-    #[test_case(fixtures::SETTINGS_PREVIEWING, fixtures::STATE_INACTIVE, 6500; "maximum temperature")]
-    fn always_refresh_writes_preview_on_then_off(initial: &[u8], state: &[u8], kelvin: u16) {
-        let store = MemoryStore::with(&[(Key::Settings, initial), (Key::State, state)]);
-        let nightlight = Nightlight::with_store(store.clone(), clock);
-        assert!(
-            nightlight
-                .set_color_temperature(
-                    ColorTemperature::new(kelvin).expect("valid temperature"),
-                    RefreshPolicy::Always
-                )
-                .expect("refresh completes")
-        );
-        assert!(!stored_settings(&store).is_previewing());
-        assert_eq!(store.writes(), [Key::Settings, Key::Settings]);
-        assert_eq!(store.reads(), [Key::Settings, Key::Settings]);
-        assert_eq!(store.value(Key::State).as_deref(), Some(state));
-        for ((_, bytes), previewing) in store.write_attempts().iter().zip([true, false]) {
-            let settings = Settings::from_bytes(bytes).expect("written settings decode");
-            assert_eq!(settings.color_temperature(), Some(kelvin.cast_signed()));
-            assert_eq!(settings.is_previewing(), previewing);
-            assert_eq!(settings.mode(), ScheduleMode::SetHours);
-        }
-    }
-
-    #[test]
-    fn always_refresh_does_not_require_state() {
+    fn apply_does_not_write_when_state_cannot_be_read() {
         let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
-        let nightlight = Nightlight::with_store(store.clone(), clock);
-        assert!(
-            nightlight
-                .set_color_temperature(
-                    "2790".parse().expect("valid temperature"),
-                    RefreshPolicy::Always
-                )
-                .expect("refresh needs only settings")
-        );
-        assert_eq!(store.reads(), [Key::Settings, Key::Settings]);
-        assert_eq!(store.writes(), [Key::Settings, Key::Settings]);
-        assert!(!stored_settings(&store).is_previewing());
-        assert_eq!(store.value(Key::State), None);
-    }
-
-    #[test_case(false; "fixed clock")]
-    #[test_case(true; "clock moves backward")]
-    fn repeated_refresh_advances_timestamps_with_unchanged_temperature(clock_moves_backward: bool) {
-        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_PREVIEWING)]);
-        let nightlight = Nightlight::with_store(store.clone(), clock);
-        let temperature = "2790".parse().expect("valid temperature");
-        assert!(
-            nightlight
-                .set_color_temperature(temperature, RefreshPolicy::Always)
-                .expect("first refresh completes")
-        );
-        let next_clock = if clock_moves_backward {
-            clock_before_fixtures
-        } else {
-            clock
-        };
-        let nightlight = Nightlight::with_store(store.clone(), next_clock);
-        assert!(
-            nightlight
-                .set_color_temperature(temperature, RefreshPolicy::Always)
-                .expect("second refresh completes")
-        );
-        assert_eq!(store.writes(), [Key::Settings; 4]);
-        for ((_, bytes), (previewing, seconds)) in store.write_attempts().iter().zip([
-            (true, 1_800_000_000),
-            (false, 1_800_000_002),
-            (true, 1_800_000_004),
-            (false, 1_800_000_006),
-        ]) {
-            let settings = Settings::from_bytes(bytes).expect("written settings decode");
-            assert_eq!(settings.is_previewing(), previewing);
-            assert_eq!(settings.color_temperature(), Some(2790));
-            assert_eq!(
-                settings.modified(),
-                Some(UNIX_EPOCH + Duration::from_secs(seconds))
-            );
-        }
-    }
-
-    #[test_case(RefreshPolicy::Automatic; "automatic")]
-    #[test_case(RefreshPolicy::Always; "always")]
-    fn temperature_update_aborts_before_writing_when_settings_cannot_be_read(
-        refresh: RefreshPolicy,
-    ) {
-        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
-        store.queue_reads(Key::Settings, vec![Err(WIN32_ERROR(5))]);
+        let nightlight = applying_with_store(&store, clock);
         let error = nightlight
-            .set_color_temperature("3400".parse().expect("valid temperature"), refresh)
-            .expect_err("settings read is denied");
-        assert_eq!(error.kind(), ErrorKind::Registry);
-        assert_eq!(store.reads(), [Key::Settings]);
-        assert_eq!(store.writes(), []);
-    }
-
-    #[test_case(false; "cleanup writes fail")]
-    #[test_case(true; "cleanup reads fail")]
-    fn always_refresh_recovers_after_exhausted_cleanup(read_failure: bool) {
-        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_PREVIEWING)]);
-        let nightlight = Nightlight::with_store(store.clone(), clock);
-        if read_failure {
-            store.queue_reads(
-                Key::Settings,
-                vec![
-                    Ok(fixtures::SETTINGS_PREVIEWING.to_vec()),
-                    Err(WIN32_ERROR(5)),
-                    Err(WIN32_ERROR(5)),
-                    Err(WIN32_ERROR(5)),
-                ],
-            );
-        } else {
-            store.queue_writes(
-                Key::Settings,
-                vec![
-                    Ok(()),
-                    Err(WIN32_ERROR(5)),
-                    Err(WIN32_ERROR(5)),
-                    Err(WIN32_ERROR(5)),
-                ],
-            );
-        }
-        let temperature = "2790".parse().expect("valid temperature");
-        let error = nightlight
-            .set_color_temperature(temperature, RefreshPolicy::Always)
-            .expect_err("cleanup fails after temperature storage");
-        assert_eq!(error.kind(), ErrorKind::PreviewCleanup);
-        assert!(stored_settings(&store).is_previewing());
-        assert_eq!(stored_settings(&store).color_temperature(), Some(2790));
-        assert!(
-            nightlight
-                .set_color_temperature(temperature, RefreshPolicy::Always)
-                .expect("next operation repeats the full refresh")
-        );
-        let first_attempt_writes = if read_failure { 1 } else { 4 };
-        assert_eq!(store.writes().len(), first_attempt_writes + 2);
-        for ((_, bytes), (previewing, seconds)) in store
-            .write_attempts()
-            .iter()
-            .skip(first_attempt_writes)
-            .zip([(true, 1_800_000_002), (false, 1_800_000_004)])
-        {
-            let settings = Settings::from_bytes(bytes).expect("written settings decode");
-            assert_eq!(settings.is_previewing(), previewing);
-            assert_eq!(settings.color_temperature(), Some(2790));
-            assert_eq!(
-                settings.modified(),
-                Some(UNIX_EPOCH + Duration::from_secs(seconds))
-            );
-        }
-        assert!(!stored_settings(&store).is_previewing());
-    }
-
-    #[test_case("3400", true; "changed temperature")]
-    #[test_case("2790", false; "same temperature")]
-    fn preserves_existing_preview_without_reading_state(temperature: &str, changed: bool) {
-        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_PREVIEWING)]);
-        let nightlight = Nightlight::with_store(store.clone(), clock);
-        assert_eq!(
-            nightlight
-                .set_color_temperature(
-                    temperature.parse().expect("valid temperature"),
-                    RefreshPolicy::Automatic
-                )
-                .expect("settings update"),
-            changed
-        );
-        assert!(stored_settings(&store).is_previewing());
-        assert_eq!(store.reads(), [Key::Settings]);
-        assert_eq!(store.writes().len(), usize::from(changed));
-    }
-
-    #[test_case(RefreshPolicy::Automatic; "automatic")]
-    #[test_case(RefreshPolicy::Always; "always")]
-    fn unchanged_active_temperature_matches_native_preview_sequence_with_future_timestamps(
-        refresh: RefreshPolicy,
-    ) {
-        let initial = hex!(
-            "434201000A0201002A06BCE6C5D6062A2B0E2143420100CA140E1500CA1E0E0700CF28B231CA320E132E1100CA3C0E062E260000000000"
-        );
-        let store = MemoryStore::with(&[
-            (Key::Settings, &initial),
-            (Key::State, fixtures::STATE_ACTIVE),
-        ]);
-        let nightlight = Nightlight::with_store(store.clone(), clock_before_fixtures);
-        assert!(
-            nightlight
-                .set_color_temperature("3161".parse().expect("valid temperature"), refresh)
-                .expect("preview refreshes")
-        );
-        assert_eq!(store.write_attempts(), vec![
-            (Key::Settings, hex!("434201000A0201002A06BEE6C5D6062A2B0E2443420100CA140E1500CA1E0E0700CF28B231CA320E132E1100CA3C0E062E2600C2460100000000").to_vec()),
-            (Key::Settings, hex!("434201000A0201002A06C0E6C5D6062A2B0E2143420100CA140E1500CA1E0E0700CF28B231CA320E132E1100CA3C0E062E260000000000").to_vec()),
-        ]);
-        assert_eq!(
-            store.value(Key::State).as_deref(),
-            Some(fixtures::STATE_ACTIVE)
-        );
-    }
-
-    #[test_case(RefreshPolicy::Automatic; "automatic")]
-    #[test_case(RefreshPolicy::Always; "always")]
-    fn preview_cleanup_preserves_newer_temperature_schedule_unknown_fields_and_timestamp(
-        refresh: RefreshPolicy,
-    ) {
-        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
-        let newer = hex!(
-            "43420100 0A020100 2A 068AA4A7DA06 2A 0605 2B0E2A"
-            "43420100 C20A00 CA140E012E0F00 CA1E00 CF28C03E D02D0A CA320E132E1700 CA3C0E072E0C00 C24601 00"
-            "00 4201 00 4607 00"
-        );
-        store.queue_reads(
-            Key::Settings,
-            vec![
-                Ok(fixtures::SETTINGS_SET_HOURS.to_vec()),
-                Ok(newer.to_vec()),
-            ],
-        );
-        nightlight
-            .set_color_temperature("3400".parse().expect("valid temperature"), refresh)
-            .expect("temperature updates");
-        assert_eq!(
-            store.value(Key::Settings).expect("settings exist"),
-            hex!(
-                "43420100 0A020100 2A 068CA4A7DA06 2A 0605 2B0E27"
-                "43420100 C20A00 CA140E012E0F00 CA1E00 CF28C03E D02D0A CA320E132E1700 CA3C0E072E0C00 00"
-                "00 4201 00 4607 00"
-            )
-        );
-        assert_eq!(store.writes(), [Key::Settings, Key::Settings]);
-        assert_eq!(
-            store.value(Key::State).as_deref(),
-            Some(fixtures::STATE_ACTIVE)
-        );
-    }
-
-    #[test]
-    fn temperature_update_aborts_before_writing_when_state_cannot_be_read() {
-        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
-        let nightlight = Nightlight::with_store(store.clone(), clock);
-        let error = nightlight
-            .set_color_temperature(
-                "3400".parse().expect("valid temperature"),
-                RefreshPolicy::Automatic,
-            )
+            .apply_color_temperature(ColorTemperature::new(3400).expect("3400K is in range"))
             .expect_err("state is missing");
         assert_eq!(error.kind(), ErrorKind::NotFound);
         assert_eq!(store.writes(), []);
     }
 
-    #[test_case(RefreshPolicy::Automatic; "automatic")]
-    #[test_case(RefreshPolicy::Always; "always")]
-    fn failed_preview_activation_does_not_run_cleanup(refresh: RefreshPolicy) {
-        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+    type TemperatureOperation = fn(&Nightlight, ColorTemperature) -> Result<bool>;
+
+    #[test_case(Nightlight::set_color_temperature; "set")]
+    #[test_case(Nightlight::apply_color_temperature; "apply")]
+    fn temperature_operation_does_not_write_when_settings_cannot_be_read(
+        operation: TemperatureOperation,
+    ) {
+        let store = MemoryStore::with(&[
+            (Key::Settings, fixtures::SETTINGS_SET_HOURS),
+            (Key::State, fixtures::STATE_ACTIVE),
+        ]);
+        store.queue_reads(Key::Settings, vec![Err(WIN32_ERROR(5))]);
+        let nightlight = applying_with_store(&store, clock);
+        let temperature = ColorTemperature::new(3400).expect("3400K is in range");
+        let error = operation(&nightlight, temperature).expect_err("settings read is denied");
+        assert_eq!(error.kind(), ErrorKind::Registry);
+        assert_eq!(store.reads(), [Key::Settings]);
+        assert_eq!(store.writes(), []);
+    }
+
+    #[test]
+    fn failed_apply_write_does_not_wait_or_end_preview() {
+        let (_, store) = nightlight(fixtures::STATE_ACTIVE, clock);
         store.queue_writes(Key::Settings, vec![Err(WIN32_ERROR(5))]);
+        let nightlight = applying_with_store(&store, clock);
         let error = nightlight
-            .set_color_temperature("3400".parse().expect("valid temperature"), refresh)
+            .apply_color_temperature(ColorTemperature::new(3400).expect("3400K is in range"))
             .expect_err("write is denied");
         assert_eq!(error.kind(), ErrorKind::Registry);
         assert_eq!(store.writes(), [Key::Settings]);
+        assert_eq!(sleeps(), []);
         assert_eq!(
             store.value(Key::Settings).as_deref(),
             Some(fixtures::SETTINGS_SET_HOURS)
         );
     }
 
-    #[test_case(RefreshPolicy::Automatic; "automatic")]
-    #[test_case(RefreshPolicy::Always; "always")]
-    fn retries_preview_cleanup_after_a_failed_write(refresh: RefreshPolicy) {
-        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+    #[test]
+    fn apply_retries_ending_preview_after_a_failed_write() {
+        let (_, store) = nightlight(fixtures::STATE_ACTIVE, clock);
         store.queue_writes(Key::Settings, vec![Ok(()), Err(WIN32_ERROR(5)), Ok(())]);
-        assert!(
-            nightlight
-                .set_color_temperature("3400".parse().expect("valid temperature"), refresh)
-                .expect("cleanup retry succeeds")
-        );
+        let nightlight = applying_with_store(&store, clock);
+        nightlight
+            .apply_color_temperature(ColorTemperature::new(3400).expect("3400K is in range"))
+            .expect("cleanup retry succeeds");
         assert_eq!(
             store.writes(),
             [Key::Settings, Key::Settings, Key::Settings]
         );
-        assert!(!stored_settings(&store).is_previewing());
-        assert_eq!(stored_settings(&store).color_temperature(), Some(3400));
-        assert_eq!(
-            stored_settings(&store).modified(),
-            Some(UNIX_EPOCH + Duration::from_secs(1_800_000_002))
-        );
+        let settings = stored_settings(&store);
+        assert!(!settings.is_previewing());
+        assert_eq!(settings.color_temperature(), Some(3400));
+        assert_eq!(settings.modified(), Some(at(1_800_000_002)));
     }
 
-    #[test_case(RefreshPolicy::Automatic; "automatic")]
-    #[test_case(RefreshPolicy::Always; "always")]
-    fn retries_preview_cleanup_after_a_failed_read(refresh: RefreshPolicy) {
-        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+    #[test]
+    fn apply_retries_ending_preview_after_a_failed_read() {
+        let (_, store) = nightlight(fixtures::STATE_ACTIVE, clock);
         store.queue_reads(
             Key::Settings,
             vec![
@@ -844,58 +872,45 @@ mod tests {
                 Err(WIN32_ERROR(5)),
             ],
         );
-        assert!(
-            nightlight
-                .set_color_temperature("3400".parse().expect("valid temperature"), refresh)
-                .expect("cleanup retry succeeds")
-        );
+        let nightlight = applying_with_store(&store, clock);
+        nightlight
+            .apply_color_temperature(ColorTemperature::new(3400).expect("3400K is in range"))
+            .expect("cleanup retry succeeds");
         assert_eq!(store.writes(), [Key::Settings, Key::Settings]);
         assert_eq!(
             store.reads(),
-            match refresh {
-                RefreshPolicy::Automatic =>
-                    vec![Key::Settings, Key::State, Key::Settings, Key::Settings],
-                RefreshPolicy::Always => vec![Key::Settings, Key::Settings, Key::Settings],
-            }
+            [Key::Settings, Key::State, Key::Settings, Key::Settings]
         );
-        assert!(!stored_settings(&store).is_previewing());
-        assert_eq!(stored_settings(&store).color_temperature(), Some(3400));
+        let settings = stored_settings(&store);
+        assert!(!settings.is_previewing());
+        assert_eq!(settings.color_temperature(), Some(3400));
     }
 
-    #[test_case(false, RefreshPolicy::Automatic; "automatic cleanup writes fail")]
-    #[test_case(true, RefreshPolicy::Automatic; "automatic cleanup reads fail")]
-    #[test_case(false, RefreshPolicy::Always; "always cleanup writes fail")]
-    #[test_case(true, RefreshPolicy::Always; "always cleanup reads fail")]
-    fn reports_exhausted_preview_cleanup_with_the_underlying_error(
-        read_failure: bool,
-        refresh: RefreshPolicy,
-    ) {
-        use std::error::Error as _;
-
-        let (nightlight, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+    fn fail_cleanup(store: &MemoryStore, initial: &[u8], read_failure: bool) {
+        let denied = WIN32_ERROR(5);
         if read_failure {
             store.queue_reads(
                 Key::Settings,
-                vec![
-                    Ok(fixtures::SETTINGS_SET_HOURS.to_vec()),
-                    Err(WIN32_ERROR(5)),
-                    Err(WIN32_ERROR(5)),
-                    Err(WIN32_ERROR(5)),
-                ],
+                vec![Ok(initial.to_vec()), Err(denied), Err(denied), Err(denied)],
             );
         } else {
             store.queue_writes(
                 Key::Settings,
-                vec![
-                    Ok(()),
-                    Err(WIN32_ERROR(5)),
-                    Err(WIN32_ERROR(5)),
-                    Err(WIN32_ERROR(5)),
-                ],
+                vec![Ok(()), Err(denied), Err(denied), Err(denied)],
             );
         }
+    }
+
+    #[test_case(false; "cleanup writes fail")]
+    #[test_case(true; "cleanup reads fail")]
+    fn apply_reports_exhausted_preview_cleanup_with_the_underlying_error(read_failure: bool) {
+        use std::error::Error as _;
+
+        let (_, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+        fail_cleanup(&store, fixtures::SETTINGS_SET_HOURS, read_failure);
+        let nightlight = applying_with_store(&store, clock);
         let error = nightlight
-            .set_color_temperature("3400".parse().expect("valid temperature"), refresh)
+            .apply_color_temperature(ColorTemperature::new(3400).expect("3400K is in range"))
             .expect_err("cleanup cannot finish");
         assert_eq!(error.kind(), ErrorKind::PreviewCleanup);
         assert_eq!(
@@ -918,11 +933,391 @@ mod tests {
             .expect("source is a Windows error");
         assert_eq!(native.code(), WIN32_ERROR(5).to_hresult());
         assert_eq!(store.writes().len(), if read_failure { 1 } else { 4 });
-        assert!(stored_settings(&store).is_previewing());
-        assert_eq!(stored_settings(&store).color_temperature(), Some(3400));
+        let settings = stored_settings(&store);
+        assert!(settings.is_previewing());
+        assert_eq!(settings.color_temperature(), Some(3400));
         assert_eq!(
             store.value(Key::State).as_deref(),
             Some(fixtures::STATE_ACTIVE)
+        );
+    }
+
+    #[test_case(false; "cleanup writes fail")]
+    #[test_case(true; "cleanup reads fail")]
+    fn apply_repeats_the_whole_sequence_after_exhausted_cleanup(read_failure: bool) {
+        let store = MemoryStore::with(&[
+            (Key::Settings, fixtures::SETTINGS_PREVIEWING),
+            (Key::State, fixtures::STATE_ACTIVE),
+        ]);
+        fail_cleanup(&store, fixtures::SETTINGS_PREVIEWING, read_failure);
+        let nightlight = applying_with_store(&store, clock);
+        let temperature = ColorTemperature::new(2790).expect("2790K is in range");
+        let error = nightlight
+            .apply_color_temperature(temperature)
+            .expect_err("cleanup fails after the preview write");
+        assert_eq!(error.kind(), ErrorKind::PreviewCleanup);
+        assert!(stored_settings(&store).is_previewing());
+        assert!(
+            nightlight
+                .apply_color_temperature(temperature)
+                .expect("the next call repeats the whole sequence")
+        );
+        let first_call_writes = if read_failure { 1 } else { 4 };
+        assert_eq!(
+            written_settings(&store)[first_call_writes..],
+            [
+                (true, Some(2790), Some(at(1_800_000_002))),
+                (false, Some(2790), Some(at(1_800_000_004))),
+            ]
+        );
+    }
+
+    #[test_case(false; "fixed clock")]
+    #[test_case(true; "clock moves backward")]
+    fn repeated_apply_advances_timestamps_with_unchanged_temperature(clock_moves_backward: bool) {
+        let store = MemoryStore::with(&[
+            (Key::Settings, fixtures::SETTINGS_PREVIEWING),
+            (Key::State, fixtures::STATE_ACTIVE),
+        ]);
+        let temperature = ColorTemperature::new(2790).expect("2790K is in range");
+        applying_with_store(&store, clock)
+            .apply_color_temperature(temperature)
+            .expect("first call applies");
+        let next_clock = if clock_moves_backward {
+            clock_before_fixtures
+        } else {
+            clock
+        };
+        applying_with_store(&store, next_clock)
+            .apply_color_temperature(temperature)
+            .expect("second call applies");
+        assert_eq!(
+            written_settings(&store),
+            [
+                (true, Some(2790), Some(at(1_800_000_000))),
+                (false, Some(2790), Some(at(1_800_000_002))),
+                (true, Some(2790), Some(at(1_800_000_004))),
+                (false, Some(2790), Some(at(1_800_000_006))),
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_advances_a_future_timestamp_by_two_seconds_per_write() {
+        let initial = hex!(
+            "434201000A0201002A06BCE6C5D6062A2B0E2143420100CA140E1500CA1E0E0700CF28B231CA320E132E1100CA3C0E062E260000000000"
+        );
+        let store = MemoryStore::with(&[
+            (Key::Settings, &initial),
+            (Key::State, fixtures::STATE_ACTIVE),
+        ]);
+        let nightlight = applying_with_store(&store, clock_before_fixtures);
+        nightlight
+            .apply_color_temperature(ColorTemperature::new(3161).expect("3161K is in range"))
+            .expect("temperature applies");
+        assert_eq!(store.write_attempts(), vec![
+            (Key::Settings, hex!("434201000A0201002A06BEE6C5D6062A2B0E2443420100CA140E1500CA1E0E0700CF28B231CA320E132E1100CA3C0E062E2600C2460100000000").to_vec()),
+            (Key::Settings, hex!("434201000A0201002A06C0E6C5D6062A2B0E2143420100CA140E1500CA1E0E0700CF28B231CA320E132E1100CA3C0E062E260000000000").to_vec()),
+        ]);
+    }
+
+    fn written_settings_times(store: &MemoryStore) -> Vec<Option<SystemTime>> {
+        written_settings(store)
+            .into_iter()
+            .map(|(_, _, modified)| modified)
+            .collect()
+    }
+
+    #[test]
+    fn settings_write_stamps_above_its_own_writes_after_a_lower_stored_time() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock_before_fixtures);
+        nightlight.start_preview().expect("preview starts");
+        nightlight
+            .preview_color_temperature(ColorTemperature::new(3400).expect("3400K is in range"))
+            .expect("step writes");
+        store.queue_reads(
+            Key::Settings,
+            vec![Ok(fixtures::SETTINGS_PREVIEWING.to_vec())],
+        );
+        nightlight.end_preview().expect("preview ends");
+        assert_eq!(
+            written_settings_times(&store),
+            [
+                Some(at(1_742_540_910)),
+                Some(at(1_742_540_912)),
+                Some(at(1_742_540_914)),
+            ]
+        );
+    }
+
+    #[test]
+    fn state_write_stamps_above_its_own_writes_after_a_lower_stored_time() {
+        let (nightlight, store) = nightlight(fixtures::STATE_INACTIVE, clock_before_fixtures);
+        nightlight.set_active(true).expect("state turns on");
+        store.queue_reads(Key::State, vec![Ok(fixtures::STATE_ACTIVE.to_vec())]);
+        nightlight.set_active(false).expect("state turns off");
+        assert_eq!(stored_state(&store).modified(), Some(at(1_742_670_477)));
+    }
+
+    #[test]
+    fn records_settings_and_state_timestamps_separately() {
+        let (nightlight, store) = nightlight(fixtures::STATE_INACTIVE, clock);
+        nightlight.toggle().expect("state toggles on");
+        nightlight.toggle().expect("state toggles off");
+        nightlight.start_preview().expect("preview starts");
+        assert_eq!(stored_state(&store).modified(), Some(at(1_800_000_002)));
+        assert_eq!(stored_settings(&store).modified(), Some(at(1_800_000_000)));
+    }
+
+    #[test]
+    fn threads_sharing_a_handle_write_increasing_timestamps() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        let write_previews = || {
+            for _ in 0..25 {
+                nightlight.start_preview().expect("preview starts");
+            }
+        };
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(write_previews);
+            }
+        });
+        let times = written_settings_times(&store);
+        assert_eq!(times.len(), 100);
+        assert!(
+            times
+                .windows(2)
+                .all(|pair| matches!(pair, [earlier, later] if earlier < later)),
+            "{times:?}"
+        );
+    }
+
+    #[test]
+    fn failed_write_does_not_raise_the_recorded_timestamp() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        store.queue_writes(Key::Settings, vec![Err(WIN32_ERROR(5))]);
+        let nightlight = Nightlight::with_store(store.clone(), clock_before_fixtures);
+        nightlight
+            .start_preview()
+            .expect_err("first write is denied");
+        nightlight.start_preview().expect("second write succeeds");
+        assert_eq!(
+            written_settings_times(&store),
+            [Some(at(1_742_540_910)), Some(at(1_742_540_910))]
+        );
+    }
+
+    #[test]
+    fn startup_margin_raises_only_the_first_settings_write() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        let nightlight =
+            Nightlight::with_store(store.clone(), clock_before_fixtures).with_startup_margin();
+        nightlight.start_preview().expect("preview starts");
+        nightlight.end_preview().expect("preview ends");
+        assert_eq!(
+            written_settings_times(&store),
+            [Some(at(1_742_541_607)), Some(at(1_742_541_609))]
+        );
+    }
+
+    #[test]
+    fn startup_margin_stays_until_a_settings_write_succeeds() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        store.queue_writes(Key::Settings, vec![Err(WIN32_ERROR(5))]);
+        let nightlight =
+            Nightlight::with_store(store.clone(), clock_before_fixtures).with_startup_margin();
+        nightlight
+            .start_preview()
+            .expect_err("first write is denied");
+        nightlight.start_preview().expect("second write succeeds");
+        assert_eq!(
+            written_settings_times(&store),
+            [Some(at(1_742_541_607)), Some(at(1_742_541_607))]
+        );
+    }
+
+    #[test]
+    fn startup_margin_does_not_apply_to_state() {
+        let (nightlight, store) = nightlight(fixtures::STATE_INACTIVE, clock_before_fixtures);
+        let nightlight = nightlight.with_startup_margin();
+        nightlight.set_active(true).expect("state turns on");
+        assert_eq!(stored_state(&store).modified(), Some(at(1_742_670_475)));
+    }
+
+    #[test]
+    fn apply_cleanup_preserves_newer_temperature_schedule_unknown_fields_and_timestamp() {
+        let (_, store) = nightlight(fixtures::STATE_ACTIVE, clock);
+        let newer = hex!(
+            "43420100 0A020100 2A 068AA4A7DA06 2A 0605 2B0E2A"
+            "43420100 C20A00 CA140E012E0F00 CA1E00 CF28C03E D02D0A CA320E132E1700 CA3C0E072E0C00 C24601 00"
+            "00 4201 00 4607 00"
+        );
+        store.queue_reads(
+            Key::Settings,
+            vec![
+                Ok(fixtures::SETTINGS_SET_HOURS.to_vec()),
+                Ok(newer.to_vec()),
+            ],
+        );
+        let nightlight = applying_with_store(&store, clock);
+        nightlight
+            .apply_color_temperature(ColorTemperature::new(3400).expect("3400K is in range"))
+            .expect("temperature applies");
+        assert_eq!(
+            store.value(Key::Settings).expect("settings exist"),
+            hex!(
+                "43420100 0A020100 2A 068CA4A7DA06 2A 0605 2B0E27"
+                "43420100 C20A00 CA140E012E0F00 CA1E00 CF28C03E D02D0A CA320E132E1700 CA3C0E072E0C00 00"
+                "00 4201 00 4607 00"
+            )
+        );
+        assert_eq!(store.writes(), [Key::Settings, Key::Settings]);
+    }
+
+    type PreviewOperation = fn(&Nightlight) -> Result<bool>;
+
+    fn start(nightlight: &Nightlight) -> Result<bool> {
+        nightlight.start_preview()
+    }
+
+    fn step(nightlight: &Nightlight) -> Result<bool> {
+        nightlight.preview_color_temperature(ColorTemperature::new(3400)?)
+    }
+
+    fn end(nightlight: &Nightlight) -> Result<bool> {
+        nightlight.end_preview()
+    }
+
+    #[test]
+    fn start_preview_writes_preview_with_unchanged_temperature() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        assert!(!nightlight.start_preview().expect("preview starts"));
+        assert_eq!(store.write_attempts(), vec![(
+            Key::Settings,
+            hex!(
+                "43420100 0A020100 2A 0680A4A7DA06 2A 2B0E29"
+                "43420100 0201 C20A00 CA140E012E0F00 CA1E00 CF28CC2B CA320E132E1700 CA3C0E072E0C00 C24601 00"
+                "00 00 00"
+            )
+            .to_vec()
+        )]);
+        assert_eq!(store.reads(), [Key::Settings]);
+    }
+
+    #[test]
+    fn drag_writes_each_step_with_advancing_timestamps() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        let warm = ColorTemperature::new(3400).expect("3400K is in range");
+        let warmer = ColorTemperature::new(2400).expect("2400K is in range");
+        let was_previewing = [
+            nightlight.start_preview().expect("preview starts"),
+            nightlight
+                .preview_color_temperature(warm)
+                .expect("first step writes"),
+            nightlight
+                .preview_color_temperature(warmer)
+                .expect("second step writes"),
+            nightlight
+                .preview_color_temperature(warmer)
+                .expect("repeated step writes"),
+            nightlight.end_preview().expect("preview ends"),
+        ];
+        assert_eq!(was_previewing, [false, true, true, true, true]);
+        assert_eq!(store.reads(), [Key::Settings; 5]);
+        assert_eq!(
+            written_settings(&store),
+            [
+                (true, Some(2790), Some(at(1_800_000_000))),
+                (true, Some(3400), Some(at(1_800_000_002))),
+                (true, Some(2400), Some(at(1_800_000_004))),
+                (true, Some(2400), Some(at(1_800_000_006))),
+                (false, Some(2400), Some(at(1_800_000_008))),
+            ]
+        );
+    }
+
+    #[test_case(start, fixtures::SETTINGS_SET_HOURS, false; "start from off")]
+    #[test_case(start, fixtures::SETTINGS_PREVIEWING, true; "start while on")]
+    #[test_case(step, fixtures::SETTINGS_SET_HOURS, false; "step from off")]
+    #[test_case(step, fixtures::SETTINGS_PREVIEWING, true; "step while on")]
+    #[test_case(end, fixtures::SETTINGS_SET_HOURS, false; "end from off")]
+    #[test_case(end, fixtures::SETTINGS_PREVIEWING, true; "end while on")]
+    fn preview_operation_reports_prior_preview_and_always_writes(
+        operation: PreviewOperation,
+        initial: &[u8],
+        was_previewing: bool,
+    ) {
+        let store = MemoryStore::with(&[(Key::Settings, initial)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        assert_eq!(
+            operation(&nightlight).expect("preview write succeeds"),
+            was_previewing
+        );
+        assert_eq!(store.reads(), [Key::Settings]);
+        assert_eq!(store.writes(), [Key::Settings]);
+    }
+
+    #[test_case(start, true, 2790; "start")]
+    #[test_case(step, true, 3400; "step")]
+    #[test_case(end, false, 2790; "end")]
+    fn preview_operation_writes_preview_and_temperature(
+        operation: PreviewOperation,
+        previewing: bool,
+        kelvin: i16,
+    ) {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_PREVIEWING)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        operation(&nightlight).expect("preview write succeeds");
+        let settings = stored_settings(&store);
+        assert_eq!(settings.is_previewing(), previewing);
+        assert_eq!(settings.color_temperature(), Some(kelvin));
+        assert_eq!(settings.mode(), ScheduleMode::SetHours);
+    }
+
+    #[test]
+    fn preview_step_preserves_unknown_fields() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_WITH_UNKNOWN_FIELDS)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        assert!(!step(&nightlight).expect("step writes"));
+        assert_eq!(
+            store.value(Key::Settings).expect("settings exist"),
+            hex!(
+                "43420100 0A020100 2A 0680A4A7DA06 2A 0605 2B0E2C"
+                "43420100 0201 C20A00 CA140E012E0F00 CA1E00 CF289035 D02D0A CA320E132E1700 CA3C0E072E0C00 C24601 00"
+                "00 4201 00 4607 00"
+            )
+        );
+    }
+
+    #[test_case(start; "start")]
+    #[test_case(step; "step")]
+    #[test_case(end; "end")]
+    fn preview_operation_does_not_write_when_settings_cannot_be_read(operation: PreviewOperation) {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_PREVIEWING)]);
+        store.queue_reads(Key::Settings, vec![Err(WIN32_ERROR(5))]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        let error = operation(&nightlight).expect_err("settings read is denied");
+        assert_eq!(error.kind(), ErrorKind::Registry);
+        assert_eq!(store.writes(), []);
+    }
+
+    #[test_case(start; "start")]
+    #[test_case(step; "step")]
+    #[test_case(end; "end")]
+    fn preview_operation_makes_one_write_attempt(operation: PreviewOperation) {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_PREVIEWING)]);
+        store.queue_writes(Key::Settings, vec![Err(WIN32_ERROR(5))]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        let error = operation(&nightlight).expect_err("settings write is denied");
+        assert_eq!(error.kind(), ErrorKind::Registry);
+        assert_eq!(store.writes(), [Key::Settings]);
+        assert_eq!(
+            store.value(Key::Settings).as_deref(),
+            Some(fixtures::SETTINGS_PREVIEWING)
         );
     }
 

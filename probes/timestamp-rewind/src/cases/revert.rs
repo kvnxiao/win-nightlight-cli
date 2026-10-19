@@ -1,5 +1,5 @@
 //! Cases that write the settings below the `Cloud` timestamp and measure how
-//! Windows replaces them. They need no observer.
+//! Windows replaces them. They do not need an observer.
 
 use crate::registry;
 use crate::session::Session;
@@ -10,7 +10,6 @@ use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::Duration;
 use win_nightlight_lib::ColorTemperature;
-use win_nightlight_lib::RefreshPolicy;
 
 const REVERT_WATCH: Duration = Duration::from_secs(1);
 const REVERT_POLL: Duration = Duration::from_millis(1);
@@ -26,7 +25,7 @@ pub(crate) fn below_cloud(session: &mut Session) -> anyhow::Result<()> {
         .cloud_modified
         .checked_sub(1)
         .context("Cloud timestamp is zero")?;
-    registry::write_settings_modified(target)?;
+    session.rewind_settings_timestamp(target)?;
     let changes = snapshot::changes(&session.light, REVERT_WATCH, REVERT_POLL)?;
     say(&format!(
         "Wrote settings at {target}, one second below Cloud {}. Changes in the next {} ms:",
@@ -51,7 +50,7 @@ pub(crate) fn cloud_boundary(session: &mut Session) -> anyhow::Result<()> {
         let target = cloud
             .checked_add_signed(offset)
             .context("Cloud timestamp is out of range")?;
-        registry::write_settings_modified(target)?;
+        session.rewind_settings_timestamp(target)?;
         let changes = snapshot::changes(&session.light, REVERT_WATCH, REVERT_POLL)?;
         let kept = changes
             .iter()
@@ -68,7 +67,7 @@ pub(crate) fn cloud_boundary(session: &mut Session) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Repeatedly write the settings below `Cloud`, request a complete refresh
+/// Repeatedly write the settings below `Cloud`, make an ordinary refresh
 /// after a growing delay, and count the refreshes Windows overwrites.
 pub(crate) fn refresh_window(session: &mut Session, passes: usize) -> anyhow::Result<()> {
     let mut lost: BTreeMap<u64, (usize, usize)> = BTreeMap::new();
@@ -81,11 +80,9 @@ pub(crate) fn refresh_window(session: &mut Session, passes: usize) -> anyhow::Re
         let target = registry::read_cloud_modified()?
             .checked_sub(1)
             .context("Cloud timestamp is zero")?;
-        registry::write_settings_modified(target)?;
+        session.rewind_settings_timestamp(target)?;
         std::thread::sleep(Duration::from_millis(delay_ms));
-        session
-            .light
-            .set_color_temperature(ColorTemperature::new(kelvin)?, RefreshPolicy::Always)?;
+        registry::ordinary_refresh(&session.light, ColorTemperature::new(kelvin)?)?;
         std::thread::sleep(SETTLE);
         let settled = session.snapshot("round")?;
         let kept = settled.kelvin == Some(kelvin.cast_signed());

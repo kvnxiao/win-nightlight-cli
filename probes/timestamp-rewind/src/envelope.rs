@@ -2,15 +2,14 @@
 //! settings, and the fields the probe changes in them.
 //!
 //! The probe patches these bytes directly because `win-nightlight-lib` only
-//! writes timestamps that move forward and does not set the preview flag on
-//! its own.
+//! writes timestamps that move forward and does not write the `Cloud` record.
 
 use anyhow::Context as _;
 use anyhow::bail;
 use anyhow::ensure;
 
-// Marshaled header, metadata struct holding `true`, then the payload container
-// whose first field is the `uint64` timestamp.
+// Marshaled header, metadata struct that stores `true`, then the payload
+// container whose first field is the `uint64` timestamp.
 const SETTINGS_PREFIX: [u8; 10] = [0x43, 0x42, 0x01, 0x00, 0x0A, 0x02, 0x01, 0x00, 0x2A, 0x06];
 // The data wrapper struct, then its field 1 as a `list<int8>` whose count
 // follows. Windows writes the wrapper without other fields.

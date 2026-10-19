@@ -18,7 +18,6 @@ use std::io::Write as _;
 use std::time::SystemTime;
 use win_nightlight_lib::ColorTemperature;
 use win_nightlight_lib::Nightlight;
-use win_nightlight_lib::RefreshPolicy;
 
 /// A temperature chosen so an observer can tell it apart from the others at
 /// a glance.
@@ -47,12 +46,36 @@ impl Tint {
     }
 }
 
+/// How the observer saw a fade change the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Smoothness {
+    Gradual,
+    Stepped,
+    AtOnce,
+    Unchanged,
+}
+
+impl Smoothness {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Gradual => "gradual",
+            Self::Stepped => "stepped",
+            Self::AtOnce => "at_once",
+            Self::Unchanged => "unchanged",
+        }
+    }
+}
+
 // The question lists every tint and does not name the expected one, so an
 // answer cannot confirm an expectation by habit. Answers are digits, not y or
 // n, so an observer used to yes/no questions does not pick a tint by reflex.
 const TINT_QUESTION: &str = "What does the screen show now? 1 neutral, no warm tint (6500 K) / 2 \
                              yellow (3400 K) / 3 deep red (1200 K) / 0 something else or unsure \
                              / quit";
+const SMOOTHNESS_QUESTION: &str = "How did the screen change during the fade? 1 gradually, \
+                                   without visible steps / 2 gradually, in visible steps / 3 all \
+                                   at once / 4 it did not change / 0 something else or unsure / \
+                                   quit";
 
 pub(crate) struct Session {
     pub(crate) light: Nightlight,
@@ -70,8 +93,9 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Returns the error of [`start`](Self::start) or `body`, and adds the
-    /// restore error when restoring fails too.
+    /// Returns the error of [`start`](Self::start) or `body`, with the restore
+    /// error added when restoring fails too, or the restore error alone when
+    /// only restoring fails.
     pub(crate) fn run(
         case: &str,
         observer: Observer,
@@ -96,8 +120,9 @@ impl Session {
     fn start(case: &str, observer: Observer) -> anyhow::Result<Self> {
         let light = Nightlight::new();
         let settings = light.read_settings()?;
-        // Preview and an open Windows Settings window both write the settings
-        // during a case.
+        // Whatever turned preview on writes the settings again to turn it off,
+        // and an open Windows Settings window writes them when its slider
+        // moves.
         ensure!(
             !settings.is_previewing(),
             "Night Light preview is active; refusing to run"
@@ -159,9 +184,25 @@ impl Session {
         self.highest_modified
     }
 
+    /// Count `modified`, a settings timestamp the case wrote without a
+    /// snapshot, so that [`restore`](Self::restore) stamps above it.
+    pub(crate) fn note_settings_modified(&mut self, modified: u64) {
+        self.highest_modified = self.highest_modified.max(modified);
+    }
+
+    /// Store `modified` as the settings timestamp, even below the stored one,
+    /// and replace the library handle.
+    pub(crate) fn rewind_settings_timestamp(&mut self, modified: u64) -> anyhow::Result<()> {
+        registry::write_settings_modified(modified)?;
+        // A handle stamps each write above the highest timestamp it has
+        // written. The cases expect the writes after a rewind to follow the
+        // stored timestamp, as the writes of a newly started program do.
+        self.light = Nightlight::new();
+        Ok(())
+    }
+
     pub(crate) fn refresh(&mut self, tint: Tint, event: &str) -> anyhow::Result<Snapshot> {
-        self.light
-            .set_color_temperature(ColorTemperature::new(tint.kelvin())?, RefreshPolicy::Always)?;
+        registry::ordinary_refresh(&self.light, ColorTemperature::new(tint.kelvin())?)?;
         self.snapshot(event)
     }
 
@@ -172,13 +213,12 @@ impl Session {
         self.snapshot(event)
     }
 
-    /// Run `count` complete refreshes to `tint` to advance the settings
+    /// Run `count` ordinary refreshes to `tint` to advance the settings
     /// timestamp ahead of real time.
     pub(crate) fn burst(&mut self, tint: Tint, count: u32) -> anyhow::Result<Snapshot> {
         let temperature = ColorTemperature::new(tint.kelvin())?;
         for _ in 0..count {
-            self.light
-                .set_color_temperature(temperature, RefreshPolicy::Always)?;
+            registry::ordinary_refresh(&self.light, temperature)?;
         }
         self.snapshot("burst")
     }
@@ -198,13 +238,54 @@ impl Session {
         Ok(seen == Some(tint))
     }
 
+    /// Ask how the last fade changed the screen and record the answer.
+    pub(crate) fn fade_looked(&mut self, step: &str) -> anyhow::Result<Option<Smoothness>> {
+        // A line typed before the question appears would answer it without
+        // the observer looking at the screen.
+        self.observer.check_quit()?;
+        let seen = loop {
+            say(SMOOTHNESS_QUESTION)?;
+            match self.observer.next_line()?.trim() {
+                "1" => break Some(Smoothness::Gradual),
+                "2" => break Some(Smoothness::Stepped),
+                "3" => break Some(Smoothness::AtOnce),
+                "4" => break Some(Smoothness::Unchanged),
+                "0" => break None,
+                _ => {}
+            }
+        };
+        self.record(
+            "observer",
+            json!({
+                "step": step,
+                "question": "smoothness",
+                "answer": seen.map_or("other", Smoothness::name),
+            }),
+        )?;
+        Ok(seen)
+    }
+
+    /// Print `text` and wait for Enter.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Quit`](crate::observer::Quit) if the observer types quit.
+    pub(crate) fn confirm(&mut self, text: &str) -> anyhow::Result<()> {
+        self.observer.check_quit()?;
+        say(&format!(
+            "{text} Press Enter to continue, or type quit to stop."
+        ))?;
+        self.observer.next_line()?;
+        Ok(())
+    }
+
     /// Refresh to neutral and then to red, and ask after each, so a display
     /// that already showed one of them cannot pass the check.
     ///
     /// # Errors
     ///
-    /// Returns an error if the observer does not see either change, because
-    /// the case's later checks then cannot distinguish its effect.
+    /// Returns an error unless the observer sees both changes, because the
+    /// case's later checks then cannot distinguish its effect.
     pub(crate) fn require_working_display(&mut self) -> anyhow::Result<()> {
         for tint in [Tint::Neutral, Tint::Red] {
             self.refresh(tint, "control")?;
@@ -218,21 +299,30 @@ impl Session {
     }
 
     /// Write the settings timestamp above every timestamp this case has seen,
-    /// so later refreshes apply, then restore the original temperature inside
-    /// a preview, which also applies after an `explorer.exe` restart, and the
-    /// original on/off state.
+    /// so later refreshes apply. Then restore the original temperature inside a
+    /// preview, which also applies after an `explorer.exe` restart, and restore
+    /// the original on/off state.
     pub(crate) fn restore(&mut self) -> anyhow::Result<()> {
+        // Drags write without a snapshot, so the stored timestamp can be above
+        // every snapshot so far.
+        self.snapshot("before_restore")?;
         let above_every_seen = self
             .highest_modified
             .max(registry::read_cloud_modified()?)
             .checked_add(1)
             .context("settings timestamp overflows")?;
         registry::write_settings_modified(above_every_seen)?;
-        if let Some(kelvin) = self
+        match self
             .original_kelvin
             .and_then(|kelvin| u16::try_from(kelvin).ok())
         {
-            registry::preview_refresh(&self.light, ColorTemperature::new(kelvin)?)?;
+            Some(kelvin) => {
+                registry::preview_refresh(&self.light, ColorTemperature::new(kelvin)?)?;
+            }
+            // A drag that stopped early can leave preview on.
+            None => {
+                self.light.end_preview()?;
+            }
         }
         self.light.set_active(self.originally_active)?;
         self.snapshot("restored")?;

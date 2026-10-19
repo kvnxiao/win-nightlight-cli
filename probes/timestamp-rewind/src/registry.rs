@@ -99,6 +99,17 @@ pub(crate) fn preview_refresh(
     Ok(())
 }
 
+/// Write `temperature` with preview on, then turn preview off right away,
+/// about 0.2 ms later.
+pub(crate) fn ordinary_refresh(
+    light: &Nightlight,
+    temperature: ColorTemperature,
+) -> anyhow::Result<()> {
+    light.preview_color_temperature(temperature)?;
+    light.end_preview()?;
+    Ok(())
+}
+
 // The read and the write are not atomic, so a concurrent writer's change in
 // between is lost.
 fn patch_settings(

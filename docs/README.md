@@ -1,9 +1,16 @@
 # Documentation
 
-## Table of Contents
+## Use the library
 
-- [Bond CompactBinary v1 Wire Format](bond-compact-binary-v1.md) — Microsoft Bond's compact binary serialization protocol
-- [Windows Night Light Registry Format](nightlight-registry-format.md) — Registry layout and schemas for Night Light configuration
-- [Change Notifications](change-notifications.md) — Wait for Night Light changes and read decoded snapshots
-- [Development](development.md) — Toolchains, lint and format configuration, and shared `just` tasks
-- [Releasing](releasing.md) — Version bumps, tagging, and crates.io publishing
+- [Color Temperature Transitions](color-temperature-transitions.md) — Choose methods for immediate changes and transitions; handle slider interference and ignored writes.
+- [Change Notifications](change-notifications.md) — Wait for Night Light changes and read decoded snapshots.
+
+## Understand the format
+
+- [Windows Night Light Registry Format](nightlight-registry-format.md) — Registry locations, settings and state schemas, and timestamp rules.
+- [Bond CompactBinary v1 Wire Format](bond-compact-binary-v1.md) — The binary encoding used by the registry values.
+
+## Contribute
+
+- [Development](development.md) — Set up toolchains and run checks.
+- [Releasing](releasing.md) — Update versions, tag releases, and publish to crates.io.

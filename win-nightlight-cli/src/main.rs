@@ -15,7 +15,6 @@ use std::io::Write;
 use std::time::SystemTime;
 use win_nightlight_lib::ColorTemperature;
 use win_nightlight_lib::Nightlight;
-use win_nightlight_lib::RefreshPolicy;
 use win_nightlight_lib::Schedule;
 use win_nightlight_lib::ScheduleMode;
 use win_nightlight_lib::Settings;
@@ -48,6 +47,8 @@ enum Command {
     Toggle,
     /// Set the color temperature
     ///
+    /// While Night Light is on, the screen changes right away. While it is
+    /// off, the temperature is stored and shows when Night Light turns on.
     /// Does not turn Night Light on.
     Temp {
         /// Color temperature in kelvin, from 1200 (warmest) to 6500 (no
@@ -119,18 +120,22 @@ fn run(command: Command, out: &mut impl Write) -> Result<()> {
         }
         Command::On => {
             nightlight.set_active(true)?;
+            end_any_preview(&nightlight)?;
         }
         Command::Off => {
             nightlight.set_active(false)?;
+            end_any_preview(&nightlight)?;
         }
         Command::Toggle => {
             nightlight.toggle()?;
+            end_any_preview(&nightlight)?;
         }
         Command::Temp { kelvin } => {
-            nightlight.set_color_temperature(kelvin, RefreshPolicy::Automatic)?;
+            nightlight.apply_color_temperature(kelvin)?;
         }
         Command::Schedule { schedule } => {
             nightlight.update_settings(|settings| settings.set_schedule(schedule.into()))?;
+            end_any_preview(&nightlight)?;
             let settings = nightlight.read_settings()?;
             let now = Zoned::now();
             let now = TimeOfDay::new(u8::try_from(now.hour())?, u8::try_from(now.minute())?)?;
@@ -142,6 +147,15 @@ fn run(command: Command, out: &mut impl Write) -> Result<()> {
             command.build();
             shell.try_generate(&command, out)?;
         }
+    }
+    Ok(())
+}
+
+// While preview is on, Windows shows the stored temperature even with Night
+// Light off, so every command that changes Night Light ends any preview.
+fn end_any_preview(nightlight: &Nightlight) -> Result<()> {
+    if nightlight.read_settings()?.is_previewing() {
+        nightlight.end_preview()?;
     }
     Ok(())
 }

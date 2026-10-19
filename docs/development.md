@@ -1,14 +1,17 @@
 # Development
 
-The workspace builds, tests, and lints with floating stable Rust and formats with floating nightly
-rustfmt. `rust-toolchain.toml` selects stable for unqualified `cargo` commands. The workspace
-`Cargo.toml` defines the shared lint baseline, `clippy.toml` configures Clippy, and `.rustfmt.toml`
-configures rustfmt.
+Use stable Rust to build, test, and lint, and nightly rustfmt to format. Neither toolchain is pinned
+to a release. Run `just check` before opening a pull request.
 
-`win-nightlight-lib` and the CLI forbid unsafe code. `win-nightlight-watch` copies the workspace
-lint baseline with `unsafe_code = "deny"` so individual Win32 wrapper functions can use scoped
-exceptions. Keep its lint tables synchronized with the workspace; each unsafe block needs a
-`SAFETY` comment describing handle validity and ownership.
+The shared configuration is in:
+
+- `rust-toolchain.toml`: the default toolchain for Cargo commands.
+- `Cargo.toml`: workspace lints.
+- `clippy.toml` and `.rustfmt.toml`: Clippy and rustfmt settings.
+
+`win-nightlight-lib` and the CLI forbid unsafe code. The watcher uses `unsafe_code = "deny"` so
+individual Win32 wrappers can allow it. Keep the watcher's copied lint tables synchronized with the
+workspace. Each unsafe block needs a `SAFETY` comment describing handle validity and ownership.
 
 ## Setup
 
@@ -52,14 +55,14 @@ The `justfile` defines the tasks that local development and CI share:
 | `just check`               | Runs `lint`, `test`, `doc`, and `dependencies`.                   |
 | `just check-msrv PACKAGE`  | Checks `PACKAGE` with the toolchain named by its `rust-version`.  |
 
-Run `just check` before opening a pull request. CI runs each task as a separate job, plus
-`just check-msrv` for all three crates and `cargo publish --workspace --dry-run --locked`.
+CI runs the `just check` tasks as separate jobs. It also checks the minimum supported Rust version
+for the published crates and runs `cargo publish --workspace --dry-run --locked`.
 
 ## Tests
 
-- Byte fixtures are hex constants: the library keeps them in `win-nightlight-lib/src/fixtures.rs`,
-  and the CLI and watcher tests define the fixtures they use. Expected decoded values come from decoding the
-  fixtures by hand, not from the code under test.
+- Byte fixtures are hex constants: the library's fixtures are in
+  `win-nightlight-lib/src/fixtures.rs`, and the CLI and watcher tests define the fixtures they use.
+  Expected decoded values come from decoding the fixtures by hand, not from the code under test.
 - CLI output tests use [`insta`](https://insta.rs) snapshots in `win-nightlight-cli/src/snapshots/`.
   After a deliberate output change, run `cargo insta test --review` (or `cargo insta review` after
   `just test`) and commit the updated `.snap` files.
@@ -67,21 +70,23 @@ Run `just check` before opening a pull request. CI runs each task as a separate 
   `proptest-regressions/` file with the fix so the failing case replays in later runs.
 - `Nightlight` tests run against an in-memory store with a fixed clock.
 - Watcher tests run on Windows and create separate scratch keys under
-  `HKEY_CURRENT_USER\Software\win-nightlight-test`, named by test and process ID. Drop guards
-  remove each test key. Tests cover native notifications, automatic rearming, external waits,
-  decoded snapshots, read failures, deferred reads, thread exit, deletion, and handle cleanup
-  without changing Night Light.
-- The watcher rustdoc example uses Night Light constructors but is marked `no_run`: tests compile
-  it without accessing those keys.
+  `HKEY_CURRENT_USER\Software\win-nightlight-test`, named by test and process ID. Drop guards remove
+  each test key. Without changing Night Light, tests cover native notifications, automatic
+  registration for the next notification, external waits, decoded snapshots, read failures, deferred
+  reads, thread exit, deletion, and handle cleanup.
+- The watcher rustdoc example uses Night Light constructors but is marked `no_run`: tests compile it
+  without accessing the Night Light registry keys.
 
 ## Probes
 
-`probes/` has interactive experiments that change live Night Light settings, such as the
-[timestamp rewind probe](../probes/timestamp-rewind/README.md). Each probe is a `publish = false`
-workspace member, so `just lint` and `just test` build it and run its unit tests, but no task or CI
-job runs it. Run a probe only through its own `justfile`, with an observer at the display.
+`probes/` has interactive experiments that change live Night Light settings, including the
+[timestamp rewind probe](../probes/timestamp-rewind/README.md).
 
-The timestamp rewind probe's trace tools are a Python uv project in
-`probes/timestamp-rewind/trace/`. `just --justfile probes/timestamp-rewind/justfile trace-check`
-checks its formatting, lint, and types, runs its tests, and audits its dependencies. The
-`Lint Python` workflow runs the same task in CI.
+- Each probe is a `publish = false` workspace member.
+- `just lint` and `just test` build probes and run their unit tests.
+- CI and the root tasks do not run the live experiments. Run those through the probe's own
+  `justfile`, with an observer at the display.
+
+The timestamp probe's Python trace tools are a uv project in `probes/timestamp-rewind/trace/`.
+Run `just --justfile probes/timestamp-rewind/justfile trace-check` to check formatting, lint, types,
+tests, and dependencies. The `Lint Python` workflow runs the same task in CI.

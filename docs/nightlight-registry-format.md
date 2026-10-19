@@ -1,11 +1,12 @@
 # Windows Night Light Registry Format
 
-Windows Night Light stores its configuration in two registry values encoded with
-[Bond CompactBinary v1](bond-compact-binary-v1.md): a settings value for the schedule and color
-temperature, and a state value for whether Night Light is on now. A third value, the `Cloud`
-record, stores the timestamp of the latest Windows Settings write. This document describes the
-registry locations, the outer CloudStore envelope, the inner Night Light schemas, and the rules a
-writer follows so that Windows applies a write.
+Windows Night Light uses [Bond CompactBinary v1](bond-compact-binary-v1.md) registry values:
+
+- **Settings:** the schedule, color temperature, and preview flag.
+- **State:** whether Night Light is on now and when it last changed.
+
+Each has a separate **Cloud record** that stores a timestamp from writes made by Windows. This guide
+covers their locations, their binary layout, and the observed rules for applying settings writes.
 
 Microsoft does not document this format. The schemas below are reverse-engineered; the field names
 and defaults come from [zomfg/NightLightLibrary](https://github.com/zomfg/NightLightLibrary)
@@ -21,7 +22,7 @@ Microsoft's cloud through Windows Backup or Enterprise State Roaming.
 
 ## Registry Locations
 
-All three values are `REG_BINARY` values named `Data` under `HKEY_CURRENT_USER`.
+The settings, state, and Cloud records are `REG_BINARY` values named `Data` under `HKEY_CURRENT_USER`.
 
 ### Settings
 
@@ -31,7 +32,7 @@ Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Curren
   windows.data.bluelightreduction.settings
 ```
 
-Contains: whether the schedule is on, the schedule type, set-hours start and end times, the color
+Stores whether the schedule is on, the schedule type, set-hours start and end times, the color
 temperature, the computed sunset and sunrise times, and a preview flag.
 
 ### State
@@ -42,7 +43,7 @@ Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Curren
   windows.data.bluelightreduction.bluelightreductionstate
 ```
 
-Contains: whether Night Light is on now, what caused the last change, and when it happened.
+Stores whether Night Light is on now, what caused the last change, and when it happened.
 
 ### Cloud record
 
@@ -50,13 +51,21 @@ Contains: whether Night Light is on now, what caused the last change, and when i
 Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Cloud\
   default$windows.data.bluelightreduction.settings\
   windows.data.bluelightreduction.settings
+
+Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Cloud\
+  default$windows.data.bluelightreduction.bluelightreductionstate\
+  windows.data.bluelightreduction.bluelightreductionstate
 ```
 
-Contains: only the timestamp of the latest settings write by Windows Settings. Its layout differs
-from the envelope of the settings and state values. `explorer.exe` writes
-it with that write's timestamp 44–62 ms after each Windows Settings write. Settings writes by any
-other program, such as one that uses this repository's `win-nightlight-lib` library, do not change
-it. The record has no payload:
+The first path is the settings' Cloud record. It stores a timestamp without the temperature or
+other settings. In the probe traces:
+
+- `explorer.exe` copied the timestamp of Windows Settings writes into this record, up to 78 ms later.
+- Once, `explorer.exe` wrote settings at startup and copied that timestamp into the record 3.3 s later.
+- Library settings writes did not update it.
+
+The record has no payload, and its layout differs from the envelope of
+the settings and state values:
 
 ```
 Marshaled CB v1 header: [0x43, 0x42, 0x01, 0x00]
@@ -64,12 +73,17 @@ Marshaled CB v1 header: [0x43, 0x42, 0x01, 0x00]
 Field 0: BT_STRUCT                          // metadata, empty
   BT_STOP
 
-Field 1: BT_UINT64 = <timestamp>            // Unix seconds of the latest Windows Settings write
+Field 1: BT_UINT64 = <timestamp>            // Unix seconds of the latest settings write by Windows
 
 BT_STOP
 ```
 
 For example, `43 42 01 00 0A 00 26 F5 90 D5 D6 06 00` records timestamp 1792362613.
+
+The state's `Cloud` record, the second path above, has the same layout. In the probe's traces,
+`explorer.exe` wrote it with the timestamp of each state write by Windows Settings or Quick Settings
+up to 71 ms after that write. After each `explorer.exe` restart, the new `explorer.exe` wrote the
+state value at startup and wrote its timestamp to the record 3.1–5.3 s later. The probe's state writes did not change it.
 
 ## Outer CloudStore Envelope
 
@@ -99,34 +113,58 @@ the Night Light fields. The inner struct's `BT_STOP` is the last byte of the lis
 
 ### Timestamp rule
 
-Windows does not reject a settings write because of its envelope timestamp. Instead, two Windows
-behaviors depend on the settings timestamp. The
-[timestamp rewind probe](../probes/timestamp-rewind/README.md) measured both on build 26300:
+The registry accepts a settings write with any envelope timestamp. Two Windows behaviors then depend
+on the timestamp. The [timestamp rewind probe](../probes/timestamp-rewind/README.md), a program in
+this repository that writes the settings and asks an observer what the screen shows, measured both
+on build 26300:
 
 - **Revert below `Cloud`:** a settings write stamped below the [`Cloud` record](#cloud-record)
   timestamp is replaced with the last Windows Settings write, including its timestamp and
-  temperature. `explorer.exe` makes this revert, and so does `ShellHost.exe`, the process that
-  shows Quick Settings, once Quick Settings has opened. Each usually reverts within 4 ms, and
-  sometimes up to about 70 ms later. A write that lands before a revert is lost.
+  temperature. `explorer.exe` makes this revert, and so does `ShellHost.exe`, the process that shows
+  Quick Settings, once Quick Settings has opened. Each usually reverts within 4 ms, and sometimes up
+  to about 70 ms later. A revert overwrites any write made between the write below `Cloud` and that
+  revert.
 - **Stale-timestamp block after a rewind:** a rewind is a settings write that moves the timestamp
-  backward but not below `Cloud`, so Windows keeps it. `explorer.exe`, which applies the settings
-  to the display, behaves as if it keeps the highest timestamp it has applied. After a rewind, it
-  ignores refreshes stamped at or below that maximum; the probe calls this state a stale-timestamp
-  block. A refresh is a temperature write with preview (field 70) turned on and then off, as
-  `RefreshPolicy::Always` makes in [Writer rules](#writer-rules). A reverted write below `Cloud`,
-  or an `explorer.exe` restart, clears the maximum (findings 4 and 6 of the probe).
+  backward but not below `Cloud`, so Windows keeps it. `explorer.exe`, which applies the settings to
+  the display, behaves as if it keeps the highest timestamp it has applied. After a rewind, it
+  ignores temperature changes stamped at or below that maximum; the probe calls this state a
+  stale-timestamp block. The ignored changes include two kinds of temperature write: a write with
+  preview (field 70) on followed at once by a write that turns preview off, and a write without
+  preview. Without a block, both apply (findings 3 and 16 of the probe). A reverted write below
+  `Cloud` clears the maximum (finding 4). An `explorer.exe` restart clears it too, but starts a
+  different block, described in [Writer rules](#writer-rules) (finding 6).
 
-Windows Settings advances the timestamp by at least two seconds on each of its writes. A writer
-therefore keeps the timestamp increasing by setting it to the later of the current Unix time and
-the previous timestamp plus two seconds:
+Windows Settings stamps each settings write it makes during a slider drag 2 s after either its own
+previous write or a settings value it read, depending on when it last read the settings, without
+rereading the value right before the write. Windows Settings and Quick Settings stamp each state
+write at the later of the current Unix time and two seconds after the stored state timestamp. Using that two-second step advances the timestamp relative to the record just read:
 
 ```
 modified = max(now_unix_seconds, previous_modified + 2)
 ```
 
-Rapid writes can advance this whole-second timestamp ahead of the clock. Its differences do not
-measure elapsed time. Reread the value before each subsequent write and compute the next timestamp
-from that snapshot. The read and write are not atomic with other writers.
+Another writer can store a lower timestamp than this writer's last one: during a slider drag,
+Windows Settings can store a timestamp below that of a program that writes more often. A writer
+whose writes must stay above `explorer.exe`'s maximum must therefore also stamp above its own
+earlier writes, because one of them may have set that maximum. `win-nightlight-lib` stamps each
+write with the following rule, where `highest_written` is the highest timestamp that the same
+`Nightlight` handle, one value that `Nightlight::new()` returns, has written to that registry value,
+or 0 before its first write:
+
+```
+modified = max(now_unix_seconds, previous_modified + 2, highest_written + 2)
+```
+
+A handle created with `Nightlight::new().with_startup_margin()` stamps its first settings write at
+least `previous_modified + 699`; the [color temperature transitions
+guide](color-temperature-transitions.md#one-handle-per-application-with-a-startup-margin) explains
+the 699-second margin. The library stamps the state value with the same rule, without the margin.
+The probe measured the revert below `Cloud` and the stale-timestamp block only for the settings
+value.
+
+Rapid writes can advance this whole-second timestamp ahead of the clock. The difference between two
+such timestamps does not measure elapsed time. Reread the value before each subsequent write and
+compute the next timestamp from that snapshot. The read and write are not atomic with other writers.
 
 ## Inner Settings Schema
 
@@ -178,9 +216,15 @@ decode: varint([0xCC, 0x2B]) = 5580, zigzag_decode(5580) = 2790
 
 ### Observed native slider behavior
 
-Windows 11 Settings uses field 70 to preview the selected color temperature. During a drag,
-preview remains true across temperature updates and returns to false afterward. The native UI
-also previews the selected temperature while Night Light is off.
+Windows 11 Settings uses field 70 to preview the selected color temperature, even while Night
+Light is off. Preview normally stays true during a drag and returns to false afterward. During a
+concurrent probe transition, a slider release was observed without a preview-off write. The one-time
+mouse-up update may have used an older timestamp and lost a race with ongoing transition updates.
+The trace does not show whether the release produced an update internally or where such an update
+was dropped. Ignoring an already stored write would not explain its absence from the trace.
+
+Once competing writes stop, a fresh click or drag-and-release on the native slider turns preview
+on and then off, clearing leftover preview.
 
 Clicking the slider to jump to a new strength produced three successive settings values:
 
@@ -192,12 +236,12 @@ In the captured settings values, only fields 40 and 70 changed. Each write also 
 envelope timestamp. These are observations of the native UI, not a documented Windows API
 contract.
 
-A capture on 2026-10-16 UTC recorded slider drags and four click interactions; the table below
-measures the clicks. The recording program used one `Watcher` from this repository's
-`win-nightlight-watch` crate per key, which registers notifications through
-`RegNotifyChangeKeyValue`. The program sampled its clocks after `WaitForMultipleObjects` returned
-a notification and before rearming and reading the value. Each interval below runs from the
-snapshot with preview true to the next snapshot with preview false:
+A capture on 2026-10-16 UTC recorded slider drags and four click interactions; the table below lists
+measurements of the clicks. The recording program used one `Watcher` per key from this repository's
+`win-nightlight-watch` crate. A `Watcher` registers for notifications through
+`RegNotifyChangeKeyValue`. The program sampled its clocks after `WaitForMultipleObjects` returned a
+notification and before registering for the next notification and reading the value. Each interval
+below runs from the snapshot with preview true to the next snapshot with preview false:
 
 | Click | Notification observation interval | Registry-key last-write interval | Envelope timestamp increase |
 | ----- | --------------------------------- | -------------------------------- | --------------------------- |
@@ -255,27 +299,41 @@ A writer that changes one value does not modify the other value:
 - Changing the schedule or the color temperature writes only the settings value and stamps the
   envelope timestamp.
 
-`Nightlight::set_color_temperature` in `win-nightlight-lib` writes only settings. With
-`RefreshPolicy::Automatic`:
+`win-nightlight-lib`, the Rust library in this repository, changes the temperature in three ways,
+and each writes only settings:
 
-- If preview is already active, it writes the temperature only when it differs from the stored
-  one, and preserves field 70.
-- Otherwise, if Night Light is active, it writes the temperature with field 70 true, then rereads
-  settings and clears field 70. It does not sleep between writes.
-- If Night Light is inactive, it writes the temperature only when it differs from the stored one,
-  without starting preview.
+- `Nightlight::set_color_temperature` writes the temperature once without changing field 70, and
+  does not write when the temperature already matches.
+- `Nightlight::apply_color_temperature` reads the settings and the on/off state before writing:
+  - While Night Light is on, it writes the temperature with field 70 true, waits 50 ms, then rereads
+    the settings and, if field 70 is still true, writes them with field 70 false. A click on the
+    native slider keeps preview on for a similar 51 to 97 ms, though it also writes the temperature
+    with preview off first. Because the second write starts from a fresh read, it keeps a newer
+    temperature that another program wrote during the wait.
+  - While Night Light is off, it writes the temperature with field 70 false in one write, so the
+    screen stays untinted, and does not write when both already match. The native slider instead
+    previews the temperature while Night Light is off.
+- `Nightlight::start_preview`, `Nightlight::preview_color_temperature`, and
+  `Nightlight::end_preview` write the settings once per call, as a drag of the native slider does:
+  preview on with the temperature unchanged, a temperature with preview on, and preview off. Preview
+  stays on from `start_preview` to `end_preview`, allowing the stored temperature to appear even
+  while Night Light is off. Windows can skip intermediate updates.
 
-With `RefreshPolicy::Always`, every call writes the requested temperature with field 70 true,
-then rereads settings and clears field 70. This includes unchanged temperatures and preexisting
-preview. It does not read the on/off state or sleep between writes. Cleanup preserves other fields
-from the fresh settings read, including a newer temperature written by another program.
+After the probe forcibly restarted `explorer.exe`, plain writes and back-to-back preview-on/off
+writes were ignored. Moving the slider or keeping preview on for about 9 ms or longer restored
+updates in the measured trials. This timing is an observation on the test machine, not a Windows
+guarantee.
 
-After `explorer.exe` is ended and restarted, Windows ignores these refreshes until Windows
-Settings writes the settings, or until a preview stays on for about 9 ms or longer. Neither policy
-keeps preview on that long. See finding 7 of the
-[timestamp rewind probe](../probes/timestamp-rewind/README.md#7-every-explorerexe-restart-blocks-ordinary-refreshes).
+`apply_color_temperature` waits 50 ms while Night Light is on. The other preview methods do not
+wait: callers must keep preview on long enough between `start_preview` and `end_preview`.
+`set_color_temperature` does not start preview. See [probe finding
+7](../probes/timestamp-rewind/README.md#7-every-explorerexe-restart-blocks-ordinary-refreshes)
+and the [transition guide](color-temperature-transitions.md) for measurements and usage.
 
-`Nightlight::write_settings` and `Nightlight::update_settings` do not add this preview sequence.
+`Nightlight::update_settings` reads the settings, applies a caller's change, and writes them only
+when the change modified them. `Nightlight::write_settings` writes a `Settings` record the caller
+supplies. Both write at most once, do not turn field 70 on or off themselves, and store the field
+70 of the record they write.
 
 A writer also preserves fields it does not model, at the inner struct and at every envelope level,
 and writes them back in ascending field-ID order. `win-nightlight-lib` does not preserve unknown

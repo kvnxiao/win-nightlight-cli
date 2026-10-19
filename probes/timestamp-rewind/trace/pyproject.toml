@@ -13,6 +13,8 @@ procmon-filter = "rewind_trace.procmon_filter:main"
 summarize-trace = "rewind_trace.summarize:main"
 preview-reads = "rewind_trace.preview_reads:main"
 reverts = "rewind_trace.reverts:main"
+write-reads = "rewind_trace.write_reads:main"
+stamps = "rewind_trace.stamps:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]

@@ -8,23 +8,19 @@ run count. The output gives each process's revert count and delays in
 milliseconds after the probe write.
 """
 
-import argparse
-import json
 import statistics
-import sys
 from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
 from typing import Final
-lazy from collections.abc import Iterable, Sequence
+lazy from collections.abc import Iterable
+lazy from datetime import datetime
 
 from rewind_trace.summary import (
     PROBE_PROCESS_PREFIX,
     Record,
     Store,
     SummaryRow,
-    parse_summary,
 )
+from rewind_trace.trace_input import in_window, load_trace_input
 
 # A revert later than this counts as late; the usual revert lands within 4 ms.
 LATE_MS: Final = 10.0
@@ -49,28 +45,6 @@ class _PendingRevert:
     written_ms: float
     cloud: int
     reverted_by: set[str] = field(default_factory=set)
-
-
-def run_window(lines: Sequence[str]) -> tuple[datetime, datetime]:
-    """Return the times of the first and last records in a results file's lines.
-
-    Raises:
-        ValueError: There are no lines, or the first or last line is not a
-            JSON record with a `utc` time.
-    """
-    if not lines:
-        message = "results file has no records"
-        raise ValueError(message)
-    return _record_time(lines[0]), _record_time(lines[-1])
-
-
-def _record_time(line: str) -> datetime:
-    record = json.loads(line)
-    try:
-        return datetime.fromisoformat(record["utc"])
-    except KeyError as error:
-        message = "results record lacks the field 'utc'"
-        raise ValueError(message) from error
 
 
 def find_reverts(
@@ -100,9 +74,7 @@ def find_reverts(
         if row.process.startswith(PROBE_PROCESS_PREFIX):
             if row.stamp < cloud:
                 pending = None
-                if window is None or (
-                    row.utc is not None and window[0] <= row.utc <= window[1]
-                ):
+                if in_window(row, window):
                     below_cloud += 1
                     pending = _PendingRevert(written_ms=row.ms, cloud=cloud)
             continue
@@ -136,35 +108,7 @@ def format_report(report: RevertReport) -> list[str]:
 
 def main() -> int:
     """Print each process's revert count and delays for probe writes below Cloud."""
-    parser = argparse.ArgumentParser(
-        prog="reverts",
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("summary", type=Path, help="trace summary (.tsv)")
-    parser.add_argument(
-        "results",
-        type=Path,
-        nargs="?",
-        help="results file (.jsonl) of the run whose writes to count",
-    )
-    arguments = parser.parse_args()
-    try:
-        with arguments.summary.open(newline="") as handle:
-            summary = parse_summary(handle)
-        window = None
-        if arguments.results is not None:
-            window = run_window(arguments.results.read_text().splitlines())
-    except ValueError as error:
-        print(f"reverts: {error}", file=sys.stderr)  # noqa: T201 -- command-line error message
-        return 1
-    if window is not None and not summary.has_utc:
-        print(  # noqa: T201 -- command-line error message
-            f"{arguments.summary} has no UTC column; "
-            "rerun summarize-trace on its .pml capture",
-            file=sys.stderr,
-        )
-        return 1
-    for line in format_report(find_reverts(summary.rows, window)):
+    trace = load_trace_input("reverts", __doc__)
+    for line in format_report(find_reverts(trace.summary.rows, trace.window)):
         print(line)  # noqa: T201 -- the report is this command's output
     return 0

@@ -43,6 +43,24 @@ reverts-while-off burst="256" *flags:
 
 quick-settings-reader: (_run "quick-settings-reader")
 
+drag-fade *flags:
+    {{probe}} drag-fade {{flags}} || [ $? -eq 3 ]
+
+drag-rate rounds="2": (_run "drag-rate" rounds)
+
+drag-interference *flags:
+    {{probe}} drag-interference {{flags}} || [ $? -eq 3 ]
+
+restart-after-slider *flags:
+    {{probe}} restart-after-slider {{flags}} || [ $? -eq 3 ]
+
+drag-hold: (_run "drag-hold")
+
+plain-write trials="10": (_run "plain-write" trials)
+
+# Store a tint while Night Light is off, switch it on, and ask whether the tint shows
+write-while-off trials="5": (_run "write-while-off" trials)
+
 suite part *flags:
     {{probe}} suite {{part}} {{flags}} || [ $? -eq 3 ]
 
@@ -58,7 +76,6 @@ trace seconds *case:
     set -euo pipefail
     seconds=$1
     shift
-    # The probe exits with this code when the observer types quit.
     quit_exit_code=3
     cargo +stable build --locked --quiet
     mkdir -p traces

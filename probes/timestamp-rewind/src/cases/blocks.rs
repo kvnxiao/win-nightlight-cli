@@ -69,7 +69,7 @@ impl TrialOutcome {
 ///
 /// Afterwards the stored temperature is yellow, or red for
 /// [`Blocker::None`].
-fn block_refreshes(session: &mut Session, blocker: Blocker) -> anyhow::Result<bool> {
+pub(super) fn block_refreshes(session: &mut Session, blocker: Blocker) -> anyhow::Result<bool> {
     match blocker {
         Blocker::None => {
             session.refresh(Tint::Red, "block")?;
@@ -214,7 +214,8 @@ pub(crate) fn preview_timing(
     say(&format!("Preview timing results:\n{}", summary.join("\n")))
 }
 
-/// Switch Night Light off, ask, and switch it back on.
+/// Switch Night Light off, ask the observer whether the screen is neutral, and
+/// switch it back on.
 ///
 /// Returns whether the screen then shows `stored`, the stored temperature.
 fn switch_off_and_on(session: &mut Session, stored: Tint) -> anyhow::Result<bool> {
@@ -289,9 +290,9 @@ pub(crate) fn stale_timestamp_survives_restart(session: &mut Session) -> anyhow:
     Ok(())
 }
 
-/// Write below `Cloud` twice, which Windows reverts, with Night Light switched
-/// off, switch it on, and check whether a refresh below the burst peak and one
-/// above it apply.
+/// Twice write below `Cloud`, which Windows reverts, refresh, and switch Night
+/// Light off, so the second write is made with Night Light off. Then switch it
+/// on and check whether a refresh below the burst peak and one above it apply.
 ///
 /// With `cloud_ahead`, a slider drag first moves `Cloud` ahead of real time,
 /// so the refreshes after both reverts reuse the same timestamps, and the
