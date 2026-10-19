@@ -73,3 +73,15 @@ Run `just check` before opening a pull request. CI runs each task as a separate 
   without changing Night Light.
 - The watcher rustdoc example uses Night Light constructors but is marked `no_run`: tests compile
   it without accessing those keys.
+
+## Probes
+
+`probes/` has interactive experiments that change live Night Light settings, such as the
+[timestamp rewind probe](../probes/timestamp-rewind/README.md). Each probe is a `publish = false`
+workspace member, so `just lint` and `just test` build it and run its unit tests, but no task or CI
+job runs it. Run a probe only through its own `justfile`, with an observer at the display.
+
+The timestamp rewind probe's trace tools are a Python uv project in
+`probes/timestamp-rewind/trace/`. `just --justfile probes/timestamp-rewind/justfile trace-check`
+checks its formatting, lint, and types, runs its tests, and audits its dependencies. The
+`Lint Python` workflow runs the same task in CI.

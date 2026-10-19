@@ -182,7 +182,9 @@ clock.
 Avoid overlapping temperature calls or using the Night Light slider in Windows Settings during a
 call. Cleanup rereads settings to preserve intervening changes, including a newer temperature, but
 registry updates are not atomic with other writers. Successful writes do not confirm a display update or guarantee that
-another writer has not changed the requested values.
+another writer has not changed the requested values. After `explorer.exe` is ended and restarted,
+Windows ignores these refreshes until someone moves the Night Light slider in Windows Settings. The
+[timestamp rewind probe](probes/timestamp-rewind/README.md) has the measurements.
 
 If three cleanup attempts fail, `ErrorKind::PreviewCleanup` reports that the temperature was
 written and preview may remain active. A later call with `Always` repeats the complete refresh,

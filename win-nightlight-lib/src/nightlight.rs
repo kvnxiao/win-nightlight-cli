@@ -68,8 +68,9 @@ impl Nightlight {
     /// Write `settings` with a new last-modified time.
     ///
     /// The new last-modified time is the current time, or two seconds after
-    /// the time stored in `settings` if that is later, because Windows
-    /// ignores a write whose time is older than the stored time.
+    /// the time stored in `settings` if that is later. The time never moves
+    /// backward, because `explorer.exe` does not apply settings stamped at or
+    /// below the highest time it has applied.
     ///
     /// # Errors
     ///
