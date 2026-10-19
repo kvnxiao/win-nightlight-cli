@@ -221,9 +221,14 @@ a new handle's writes are ignored until real time or the handle's 2-second steps
 
 Keep one handle for the application's lifetime, and create it with
 `Nightlight::new().with_startup_margin()`. That handle stamps its first settings write at least
-74 s after the stored timestamp. During a fade of up to 240 writes per second, a slider drag in
-Windows Settings can store a timestamp up to 74 s below the highest one Windows has applied, and
-the registry does not store that highest timestamp.
+699 s after the stored timestamp, so that an application that restarts soon after the user dragged
+the slider in Windows Settings during one of its fades does not have its first write ignored. During
+such a fade, a slider write can store a timestamp below the highest one Windows has applied: by up
+to 90 s in the probe described below, which measured fades at 30 and 240 writes per second. The
+registry does not store that highest timestamp. The margin is an estimate of the worst case, not a
+bound; the [color temperature transitions
+guide](docs/color-temperature-transitions.md#one-handle-per-application-with-a-startup-margin)
+explains it.
 
 The [timestamp rewind probe](probes/timestamp-rewind/README.md), a program in this repository,
 measured these Windows behaviors on a live system. It writes Night Light in controlled sequences,

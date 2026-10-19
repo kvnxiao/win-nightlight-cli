@@ -20,14 +20,15 @@ const CLEANUP_ATTEMPTS: usize = 3;
 // preview stays on for about 9 ms or longer. A click on the Windows Settings
 // slider keeps preview on for 51 to 97 ms.
 const APPLY_PREVIEW_HOLD: Duration = Duration::from_millis(50);
-// Windows Settings stamps each slider write 2 s after a value it read up to
-// this long before. Meanwhile, a fade at the transitions guide's cap of 240
-// writes per second moves the highest timestamp 2 s per write, so a slider
-// write can store a timestamp up to the margin below it.
-const SLIDER_READ_LAG_MS: u64 = 154;
+// Windows Settings stamps each slider write 2 s after its own previous write
+// or a value it read, so a slider write can follow from a read made this long
+// before it during a fade. Meanwhile, a fade at the transitions guide's cap of
+// 240 writes per second raises the highest timestamp 2 s per write, so a
+// slider write can store a timestamp up to about the margin below it.
+const SLIDER_STALE_READ_MS: u64 = 1456;
 const MAX_FADE_WRITES_PER_SEC: u64 = 240;
 const STARTUP_MARGIN_SECS: u64 =
-    (MIN_MODIFIED_STEP_SECS * MAX_FADE_WRITES_PER_SEC * SLIDER_READ_LAG_MS).div_ceil(1000);
+    (MIN_MODIFIED_STEP_SECS * MAX_FADE_WRITES_PER_SEC * SLIDER_STALE_READ_MS).div_ceil(1000);
 
 /// Handle to the current user's Night Light settings and state.
 ///
@@ -72,19 +73,21 @@ impl Nightlight {
         }
     }
 
-    /// Stamp this handle's settings writes at least 74 s after the stored
+    /// Stamp this handle's settings writes at least 699 s after the stored
     /// timestamp until one succeeds.
     ///
     /// `explorer.exe` ignores settings writes stamped at or below the highest
     /// timestamp it has applied, and the registry does not store that
     /// timestamp. After the user drags the slider in Windows Settings during a
-    /// fade, the stored timestamp can be up to 74 s below it, for fades of up
-    /// to 240 writes per second. A handle that has not written yet cannot tell
-    /// how far below it the stored timestamp is.
+    /// fade, the stored timestamp can be below it, by up to 90 s in fades
+    /// measured at 30 and 240 writes per second. A handle that has not written
+    /// yet cannot tell how far below it the stored timestamp is. The margin is
+    /// an estimate of the worst case for fades of up to 240 writes per second,
+    /// not a bound.
     ///
     /// - Later writes follow [`write_settings`](Self::write_settings).
     /// - The state value does not get the margin.
-    /// - Each handle that uses the margin adds up to 74 s to the settings
+    /// - Each handle that uses the margin adds up to 699 s to the settings
     ///   timestamp's lead over real time.
     #[must_use]
     pub fn with_startup_margin(mut self) -> Self {
@@ -1115,7 +1118,7 @@ mod tests {
         nightlight.end_preview().expect("preview ends");
         assert_eq!(
             written_settings_times(&store),
-            [Some(at(1_742_540_982)), Some(at(1_742_540_984))]
+            [Some(at(1_742_541_607)), Some(at(1_742_541_609))]
         );
     }
 
@@ -1131,7 +1134,7 @@ mod tests {
         nightlight.start_preview().expect("second write succeeds");
         assert_eq!(
             written_settings_times(&store),
-            [Some(at(1_742_540_982)), Some(at(1_742_540_982))]
+            [Some(at(1_742_541_607)), Some(at(1_742_541_607))]
         );
     }
 

@@ -75,22 +75,34 @@ writes as a press, drag, and release of the slider.
 ## One handle per application, with a startup margin
 
 Create one `Nightlight` handle when the application starts, and use it for the application's
-lifetime. Share it across threads through an `Arc`. Each handle records the highest timestamp it
-has written to the settings and to the state. A second handle, or a new handle after the
-application restarts, starts with no record.
+lifetime. Share it across threads through an `Arc`. Each handle records in memory the highest
+timestamp it has written to each value, the settings and the state. A second handle, or a new handle
+after the application restarts, starts with no record.
 
 Create the handle with `Nightlight::new().with_startup_margin()`. The handle then stamps its first
-settings write at least 74 s after the stored timestamp. The margin is for an application that
-restarts, and so creates a new handle, soon after the user dragged the slider during a fade. Windows
-Settings stamps each slider write 2 s after a value it read up to about 150 ms earlier, so during a
-fade at 240 writes per second, a slider write can store a timestamp about 74 s below the highest one
-`explorer.exe` has applied. The registry does not store that highest timestamp, so a new handle
-cannot tell how far below it the stored timestamp is.
+settings write at least 699 s, about 12 minutes, after the stored timestamp. The margin is for an
+application that restarts, and so creates a new handle, soon after the user dragged the slider
+during one of the application's fades. Without the margin, the new handle stamps its first write 2 s
+after the lower timestamp that the slider stored, and `explorer.exe` ignores the write. Windows
+Settings stamps each slider write 2 s after either its own previous write or a settings value it
+read, depending on when it last read the settings. A slider write's timestamp can therefore come
+from a read made well before the write, directly or through a series of Windows Settings' own
+writes. In the probe's four `drag-interference` runs, in which the observer dragged the slider
+during a held preview, a slider write's timestamp came from a read made up to 1,456 ms earlier in a
+run at 30 writes per second, and up to 191 ms earlier in the run at 240. In the two runs with the
+current library, one at each rate, slider writes were stamped up to 24 s and up to 90 s below the
+highest timestamp written before them. The registry does not store the highest timestamp that
+`explorer.exe` has applied, so a new handle cannot tell how far below it the stored timestamp is.
 
-The margin adds up to 74 s of lead once per handle. The 74 s value follows from the measured
-timestamps; the probe did not test an application restart right after a slider write. The `wnl`
-command-line tool in this repository does not use the margin, because each `wnl` command creates a
-new handle, and the margin would add its lead on every command.
+During that delay, each write of a fade at this guide's cap of 240 writes per second (see
+[Fades](#fades)) raises the highest timestamp by 2 s. The margin is therefore 2 s per write × 240
+writes per second × 1,456 ms, rounded up: the longest delay measured at any rate, combined with the
+cap. It is an estimate of the worst case, not a bound; the probe did not test fades between 30 and
+240 writes per second or an application restart right after a slider write. The margin adds up to
+699 s of lead once per handle, less than the about 13 minutes that the 30-second fade in
+[Fades](#fades) adds when it skips unchanged steps. The `wnl` command-line tool in this repository
+does not use the margin, because each `wnl` command creates a new handle, and the margin would add
+its lead on every command.
 
 ## One-off changes
 
@@ -197,7 +209,7 @@ looked gradual right after a restart.
 | Ramp step                               | 1                      | 2 s                 |
 | Ramp step with a brief preview          | 2                      | 4 s                 |
 | Fade with `n` written steps             | `n + 2`                | `2n + 4` s          |
-| First write of a handle with the margin | 1                      | 74 s                |
+| First write of a handle with the margin | 1                      | 699 s               |
 
 A 1-second fade at 240 writes per second adds about 8 minutes of lead. During a lead, Windows still
 applies each library write, because each is stamped above the one before. The lead shrinks only as
@@ -217,29 +229,41 @@ To see how fast the lead grows, record it after each change: the stored timestam
 
 ## When the user moves the slider during a gradual change
 
-- **During a fade:** Windows Settings stamps each drag write 2 s after its own previous write,
-  starting from the timestamp it read when the user pressed the slider. It writes about every 60 ms
-  during a drag, so an application that writes more often keeps the stored timestamp ahead of those
-  writes. Windows ignores nearly all of the slider's writes. In the probe, against a fade of 30
-  writes per second, 181 of 194 slider writes in two runs were stamped at or below the highest
-  timestamp. The observer saw the fade continue, and the screen rarely showed the slider's
-  temperature, each time for a few frames.
-- **Effect on the fade:** each slider write stores a timestamp below the fade's latest write. The
-  handle stamps the fade's next write at least 2 s after the highest timestamp it has written, so
-  that write is stamped above the slider's write and above the highest timestamp `explorer.exe`
-  has applied. The two probe runs used an earlier library build that stamped 2 s after the stored
-  timestamp. In them, 217 fade writes after a slider write were stamped at or below the highest
-  timestamp `explorer.exe` had applied.
+- **During a fade:** Windows Settings writes at most about once every 60 ms during a drag. It stamps
+  each slider write 2 s after either its own previous write or a settings value it read, depending
+  on when it last read the settings, and it does not reread the settings right before the write. An
+  application that writes more often therefore keeps the stored timestamp ahead of the slider's
+  writes, and Windows ignores nearly all of them. In the probe's four `drag-interference` runs,
+  three at 30 writes per second and one at 240, 225 of 238 slider writes were stamped at or below
+  the highest timestamp written before them. In the first two runs, the observer saw the fade
+  continue, and the screen rarely showed the slider's temperature, each time for a few frames; the
+  last two runs did not record what the screen showed.
+- **Effect on the fade:** most slider writes store a timestamp below the fade's latest write. In the
+  two probe runs with the current library, slider writes were stamped up to 24 s below at 30 writes
+  per second and up to 90 s below at 240. The handle stamps the fade's next write at least 2 s after
+  the highest timestamp it has written, so that write is stamped above the slider's write and above
+  the highest timestamp written before it. In those two runs, 0 of the probe's 8,122 writes were
+  stamped at or below the highest timestamp written before them. The first two runs used an earlier
+  0.5.0 development build that stamped 2 s after the stored timestamp. In them, 217 fade writes
+  after a slider write were stamped at or below the highest timestamp written before them, so
+  Windows presumably ignored them.
 - **When the user releases the slider:** Windows Settings usually turns preview off. The next
   `preview_color_temperature` call then returns `false` and turns preview back on, so the fade
-  continues. In one probe run, Windows Settings did not turn preview off on release, so the
-  return values do not show every slider interaction.
-- **After a fade ends:** slider writes apply again. In the probe, slider writes made after the fade
-  were stamped above the stored timestamp and changed the screen.
+  continues. In one probe run, Windows Settings did not turn preview off on release. A `false`
+  return therefore shows only a release that turned preview off, and the return values do not show
+  presses, drags, or other releases.
+- **After a fade ends:** slider writes apply again. In the first probe run, the 9 slider writes made
+  after the fade were stamped above the stored timestamp and changed the screen.
 - **During a ramp:** steps are seconds apart, so writes from a slider drag apply between them. The
-  next step is stamped above the slider's writes and replaces the user's temperature, and the
-  slider's next write after that step can be ignored. This follows from the timestamps; the probe
-  did not test it.
+  next step is stamped 2 s after the slider's latest write, above the slider's writes, and replaces
+  the user's temperature. The slider's next write is stamped 2 s after the step if Windows Settings
+  has read the step, and otherwise 2 s after its own previous write. In the second case, the
+  slider's write has the same timestamp as the step, so Windows ignores it, and the slider's later
+  writes are stamped higher and apply. In the probe, the `slider-stamps` case wrote the settings
+  back unchanged once per second during one drag. After 7 of its 10 writes, the next slider write
+  had the same timestamp as that write, and after the other 3, it was stamped 2 s later. The probe
+  did not check what the screen showed during that drag, so the effect on the screen follows from
+  the timestamps.
 
 The library does not decide whether a change continues after the user moves the slider. To detect a
 slider move before a ramp step, compare the stored temperature from `read_settings` with the last

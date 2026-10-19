@@ -1,11 +1,11 @@
 # Windows Night Light Registry Format
 
-Windows Night Light stores its configuration in two registry values encoded with
-[Bond CompactBinary v1](bond-compact-binary-v1.md): a settings value for the schedule and color
-temperature, and a state value for whether Night Light is on now. A third value, the `Cloud`
-record, stores the timestamp of the latest Windows Settings write. This document describes the
-registry locations, the outer CloudStore envelope, the inner Night Light schemas, and the rules a
-writer follows so that Windows applies a write.
+Windows Night Light stores its configuration in two registry values encoded with [Bond CompactBinary
+v1](bond-compact-binary-v1.md): a settings value for the schedule and color temperature, and a state
+value for whether Night Light is on now. A third value, the `Cloud` record, stores the timestamp of
+the latest settings write by Windows itself, and the state value has a `Cloud` record of its own.
+This document describes the registry locations, the outer CloudStore envelope, the inner Night Light
+schemas, and the rules a writer follows so that Windows applies a write.
 
 Microsoft does not document this format. The schemas below are reverse-engineered; the field names
 and defaults come from [zomfg/NightLightLibrary](https://github.com/zomfg/NightLightLibrary)
@@ -50,13 +50,19 @@ Contains: whether Night Light is on now, what caused the last change, and when i
 Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Cloud\
   default$windows.data.bluelightreduction.settings\
   windows.data.bluelightreduction.settings
+
+Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Cloud\
+  default$windows.data.bluelightreduction.bluelightreductionstate\
+  windows.data.bluelightreduction.bluelightreductionstate
 ```
 
-Contains: only the timestamp of the latest settings write by Windows Settings. 44–62 ms after each
-Windows Settings write, `explorer.exe` writes it with that write's timestamp. Settings writes by any
-other program, such as one that uses this repository's `win-nightlight-lib` library, do not change
-it. The record has no payload, and its layout differs from the envelope of the settings and state
-values:
+Contains: only the timestamp of the latest settings write by Windows Settings or by a restarted
+`explorer.exe`. In the probe's traces, `explorer.exe` wrote the record with the timestamp of each
+Windows Settings write up to 71 ms after that write. Once in those traces, a restarted
+`explorer.exe` wrote the settings at startup and wrote that timestamp to the record 3.3 s later.
+Settings writes by any other program, such as one that uses this repository's `win-nightlight-lib`
+library, do not change it. The record has no payload, and its layout differs from the envelope of
+the settings and state values:
 
 ```
 Marshaled CB v1 header: [0x43, 0x42, 0x01, 0x00]
@@ -64,12 +70,18 @@ Marshaled CB v1 header: [0x43, 0x42, 0x01, 0x00]
 Field 0: BT_STRUCT                          // metadata, empty
   BT_STOP
 
-Field 1: BT_UINT64 = <timestamp>            // Unix seconds of the latest Windows Settings write
+Field 1: BT_UINT64 = <timestamp>            // Unix seconds of the latest settings write by Windows
 
 BT_STOP
 ```
 
 For example, `43 42 01 00 0A 00 26 F5 90 D5 D6 06 00` records timestamp 1792362613.
+
+The state's `Cloud` record, the second path above, has the same layout. In the probe's traces,
+`explorer.exe` wrote it with the timestamp of each state write by Windows Settings or Quick Settings
+up to 71 ms after that write. After each `explorer.exe` restart, the new `explorer.exe` wrote the
+state value at startup and wrote its timestamp to the record 3.1–5.3 s later. State writes by other
+programs do not change it.
 
 ## Outer CloudStore Envelope
 
@@ -120,9 +132,12 @@ on build 26300:
   `Cloud` clears the maximum (finding 4). An `explorer.exe` restart clears it too, but starts a
   different block, described in [Writer rules](#writer-rules) (finding 6).
 
-Windows Settings stamps each of its writes two seconds after the last timestamp it read or wrote. A
+Windows Settings stamps each settings write it makes during a slider drag 2 s after either its own
+previous write or a settings value it read, depending on when it last read the settings, without
+rereading the value right before the write. Windows Settings and Quick Settings stamp each state
+write at the later of the current Unix time and two seconds after the stored state timestamp. A
 writer that uses the same two-second step keeps the timestamp increasing: it sets the timestamp to
-the later of the current Unix time and the previous timestamp plus two seconds.
+the later of the current Unix time and the stored timestamp plus two seconds.
 
 ```
 modified = max(now_unix_seconds, previous_modified + 2)
@@ -133,19 +148,19 @@ Windows Settings can store a timestamp below that of a program that writes more 
 whose writes must stay above `explorer.exe`'s maximum must therefore also stamp above its own
 earlier writes, because one of them may have set that maximum. `win-nightlight-lib` stamps each
 write with the following rule, where `highest_written` is the highest timestamp that the same
-`Nightlight` handle, one value that `Nightlight::new()` returns, has written to that value, or 0
-before its first write:
+`Nightlight` handle, one value that `Nightlight::new()` returns, has written to that registry value,
+or 0 before its first write:
 
 ```
 modified = max(now_unix_seconds, previous_modified + 2, highest_written + 2)
 ```
 
 A handle created with `Nightlight::new().with_startup_margin()` stamps its first settings write at
-least `previous_modified + 74`; the [color temperature transitions
-guide](color-temperature-transitions.md#one-handle-per-application-with-a-startup-margin)
-explains the 74-second margin. The library stamps the state value with the same rule, without the
-margin. The probe measured the revert below `Cloud` and the stale-timestamp block only for the
-settings value.
+least `previous_modified + 699`; the [color temperature transitions
+guide](color-temperature-transitions.md#one-handle-per-application-with-a-startup-margin) explains
+the 699-second margin. The library stamps the state value with the same rule, without the margin.
+The probe measured the revert below `Cloud` and the stale-timestamp block only for the settings
+value.
 
 Rapid writes can advance this whole-second timestamp ahead of the clock. The difference between two
 such timestamps does not measure elapsed time. Reread the value before each subsequent write and

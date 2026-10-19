@@ -58,8 +58,9 @@ findings into rules for applications.
   moves the timestamp back, the probe replaces its handle, so its later writes follow the stored
   timestamp, as the writes of a newly started program do. The runs for findings 1 to 12, including
   suite parts 1 to 4, used version 0.4.0. The runs for findings 13 to 16 used version 0.5.0, which
-  adds the methods named below. The 0.5.0 runs from 06:57 to 07:57 UTC on 2026-10-19 used an
-  earlier build that stamped `max(now, previous + 2)`.
+  adds the methods named below. The 0.5.0 runs from 06:57 to 07:57 UTC on 2026-10-19 used an earlier
+  build that stamped `max(now, previous + 2)`; the runs from 18:35 to 18:59 UTC used the current
+  rule.
 - **Preview:** a flag in the settings value that asks Windows to apply the stored temperature
   temporarily, even while Night Light is off. Windows Settings turns it on when the Night Light
   Strength slider is pressed and off when the slider is released.
@@ -139,19 +140,24 @@ traces.
 
 - `Cloud` is a 13-byte record with only a timestamp. The state value has a `Cloud` record with the
   same layout.
-- `explorer.exe` wrote the settings' `Cloud` record 266 times in the traces. In 265 of them, it
-  wrote the timestamp of a settings write by Windows Settings (`SystemSettings.exe`), 44–63 ms after
-  that write. Once, a restarted `explorer.exe` wrote the settings itself at startup, stamped 2 s
-  after the stored timestamp, and wrote that timestamp to `Cloud` 3.3 s later. `explorer.exe` never
-  wrote `Cloud` after a library write.
-- After each of the 10 restarts in `plain-write`, whose trace records the state timestamps, the new
-  `explorer.exe` wrote the state value, stamped with the later of real time and 2 s after the stored
-  state timestamp. Then, 3.1–4.0 s later, it wrote that timestamp to the state's `Cloud` record. The
-  probe's 20 state writes in that run did not change the state's `Cloud` record.
-- Windows Settings stamps each write 2 s after the last timestamp it read or wrote: the stored
-  timestamp, which it reads when the slider is pressed, then the timestamp of its own previous write
-  ([finding 15](#15-while-a-fade-writes-faster-than-windows-settings-windows-ignores-the-slider)). A
-  slider drag during a lead therefore leaves `Cloud` ahead of real time.
+- `explorer.exe` wrote the settings' `Cloud` record 493 times in the traces. In 492 of them, it
+  wrote the timestamp of a settings write by Windows Settings (`SystemSettings.exe`), up to 71 ms
+  after that write. Once, a restarted `explorer.exe` wrote the settings itself at startup, stamped
+  2 s after the stored timestamp, and wrote that timestamp to `Cloud` 3.3 s later. `explorer.exe`
+  never wrote `Cloud` after a library write.
+- The state's `Cloud` record follows the same pattern. Windows Settings and Quick Settings
+  (`ShellHost.exe`) stamped each state write that followed an earlier state write in the same trace
+  with the later of real time and 2 s after the stored state timestamp: 10 of 10. `explorer.exe`
+  wrote the timestamp of each of their 11 state writes to the state's `Cloud` record 56–71 ms later.
+  After each of 41 `explorer.exe` restarts, the new `explorer.exe` wrote the state value with the
+  same rule, to within 1 s of real time, then wrote its timestamp to the state's `Cloud` record
+  3.1–5.3 s later. The probe's 53 state writes did not change the state's `Cloud` record.
+- Windows Settings stamps each slider write 2 s after its own previous write or a settings value it
+  read ([finding
+  15](#15-while-a-fade-writes-faster-than-windows-settings-windows-ignores-the-slider)). In the two
+  drags of `slider-stamps` in which the probe only watched, with no other writer, each of the 56
+  slider writes was stamped 2 s after the stored timestamp. A slider drag during a lead therefore
+  leaves `Cloud` ahead of real time.
 
 ### 2. Windows reverts settings writes stamped below `Cloud`
 
@@ -347,24 +353,44 @@ with Night Light still off, the screen returned to no tint.
 
 ### 15. While a fade writes faster than Windows Settings, Windows ignores the slider
 
-`drag-interference` ran twice. Each time, the probe made a held drag at 30 writes per second while
-the observer dragged the Strength slider in Windows Settings:
+`drag-interference` ran four times. Each time, the probe made a held drag while the observer dragged
+the Strength slider in Windows Settings: at 30 writes per second in the first three runs and at 240
+in the fourth. The first two runs used the earlier library build that stamped
+`max(now, previous + 2)`, and the last two used the current rule. `slider-stamps` also traced slider
+writes, with and without probe writes. Below, the highest earlier timestamp is the highest settings
+timestamp written earlier in the trace, which stands in for the maximum:
 
-- Windows Settings stamps each slider write 2 s after its own previous write, starting from the
-  timestamp it read when the slider was pressed. It does not read the stored timestamp again during
-  the drag. For example, at 22,199 ms into the second run's trace, the probe stored timestamp
-  1792458735; 20 ms later, Windows Settings wrote 1792458733.
-- Windows Settings wrote about every 60 ms and the probe every 33 ms, so the stored timestamp stayed
-  ahead of the slider writes. In the two runs, 181 of 194 slider writes were stamped at or below the
-  highest earlier timestamp. In the first run, the observer pressed the slider several times. Of the
-  13 slider writes stamped above the highest timestamp, 9 came after the probe stopped writing, and
-  the other 4 each came right after a press. The observer saw the fade continue, and the screen
-  rarely showed the slider's temperature, each time for a few frames.
-- A slider write stores a timestamp up to 8 s below the highest one. Each probe write after it is
-  stamped 2 s higher than the stored timestamp, so the next one to four probe writes were also
-  stamped at or below the highest earlier timestamp: 217 probe writes in the two runs. Windows
-  presumably ignored these writes too; the probe writes after them were stamped above the highest
-  timestamp, and the fade continued.
+- Windows Settings stamps each slider write 2 s after its own previous write or a settings value it
+  read. In the traces of these five runs, 418 of 421 slider writes were stamped 2 s after Windows
+  Settings' previous write or after a value it read up to 191 ms before the write. The other 3 were
+  stamped 2 s after a probe write stored 96–180 ms earlier, so the trace does not show how Windows
+  Settings got that value.
+- It does not reread the stored value right before each write. While `slider-stamps` wrote the
+  stored settings back unchanged once per second during a drag, the next slider write after 7 of the
+  10 probe writes came 5–55 ms later and had the same timestamp as the probe write, because both
+  were stamped 2 s after Windows Settings' previous slider write. After the other 3, the next slider
+  write came 175–200 ms later and was stamped 2 s after the probe write.
+- Windows Settings wrote at most about once every 60 ms, and the probe every 33 ms or more often, so
+  the stored timestamp stayed ahead of the slider writes. In the four runs, 225 of 238 slider writes
+  were stamped at or below the highest earlier timestamp. All 13 others came in the first run, in
+  which the observer pressed the slider several times: 9 came after the probe stopped writing, and
+  the other 4 each came right after a press. In the first two runs, the observer saw the fade
+  continue, and the screen rarely showed the slider's temperature, each time for a few frames; the
+  last two runs did not record what the screen showed.
+- A slider write's timestamp can come from a read made well before the write: a write stamped from
+  Windows Settings' own previous write takes its timestamp from the same read as that previous
+  write. During the four fades, a slider write's timestamp came from a read made up to 1,456 ms
+  earlier at 30 writes per second and up to 191 ms earlier at 240. Meanwhile, the probe's timestamps
+  rose above the slider's: in the last two runs, slider writes were stamped up to 24 s below the
+  highest earlier timestamp at 30 writes per second and up to 90 s below at 240. At 30 writes per
+  second, the largest gap came at the end of four consecutive slider writes that Windows Settings
+  stamped from its own previous write, 581 ms after the read that the series started from.
+- In the first two runs, a slider write stored a timestamp up to 8 s below the highest earlier
+  timestamp. Each probe write after it was stamped 2 s higher than the stored timestamp, so the next
+  one to four probe writes were also stamped at or below the highest earlier timestamp: 217 probe
+  writes in the two runs. Windows presumably ignored these writes too; the probe writes after them
+  were stamped above the highest earlier timestamp, and the fade continued. In the last two runs, 0
+  of 8,122 probe writes were stamped at or below the highest earlier timestamp.
 - In the first run, Windows Settings wrote preview off 31 times as the observer pressed and
   released the slider. 25 probe writes were made while preview was off, and each of them turned
   preview back on.
@@ -372,7 +398,10 @@ the observer dragged the Strength slider in Windows Settings:
   made 68 writes, all with preview on, and made no other write to the Night Light values, failed or
   successful: releasing the slider did not turn preview off. The probe did not determine why. No
   probe write was made while preview was off.
-- In the second run, a per-step drag to yellow after the fade applied. In the first run, the
+- Every other traced release turned preview off, including the 3 in `slider-stamps` and the single
+  release in each of the last two runs. In each of those two runs, one probe write found preview off
+  and turned it back on.
+- In the last three runs, a per-step drag to yellow after the fade applied. In the first run, the
   observer was still dragging at that point. The 9 slider writes made after the probe stopped
   writing were stamped above the stored timestamp, and the screen showed the slider's temperature.
 
@@ -448,7 +477,7 @@ them. The Suite column gives the part and step of the suite that run the case.
 | `drag-fade [--rate <hz>]`                 | Fades from neutral to red with a 1-second and a 30-second held drag at `rate` writes per second, by default the refresh rate of the fastest active display, and with 20 per-step drags 3 s apart. Makes the three fades, then each again after an `explorer.exe` restart. After each fade, asks how the screen changed and whether it ended on red.                    | 13       | 5.1                |
 | `drag-rate [rounds]`                      | Makes 1-second held drags from neutral to red at 30, 60, 144, and 240 writes per second and at the fastest display's refresh rate, leaving out rates above it. Runs 2 rounds by default, each in a new random order. Asks how each fade looked without naming its rate.                                                                                                | 13       | 5.2                |
 | `slider-stamps`                           | Watches the observer press, drag, and release the slider in Windows Settings twice, then writes the stored settings back unchanged once per second for 10 s during a drag, then watches the observer switch Night Light off and on in Quick Settings and Windows Settings. Run it under `just trace`.                                                                  | 1, 15    | 5.3                |
-| `drag-interference`                       | Makes a 30-second held drag at 30 writes per second that fades between neutral and red while the observer drags and releases the slider in Windows Settings once. Then makes a per-step drag to yellow and asks whether it applied.                                                                                                                                    | 15       | 5.4                |
+| `drag-interference [--rate <hz>]`         | Makes a 30-second held drag at `rate` writes per second, 30 by default, that fades between neutral and red while the observer drags and releases the slider in Windows Settings once. Then makes a per-step drag to yellow and asks whether it applied.                                                                                                                | 15       | 5.4                |
 | `drag-hold`                               | Turns preview on and keeps it on for at least 2 minutes. Writes a tint with preview on and asks whether it applied: at the start, after the observer switches Night Light off, after the observer opens the Night Light page, after an `explorer.exe` restart, and after 2 minutes. Then turns preview off.                                                            | 14       | 5.5                |
 | `plain-write [trials]`                    | Fades from neutral to red with 20 plain writes 3 s apart and asks how the screen changed. Then makes `trials` plain writes, 10 by default, in each of four conditions: normal (no block), after switching Night Light off and on, after an `explorer.exe` restart, and during a stale-timestamp block.                                                                 | 16       | 6.1                |
 | `write-while-off [trials]`                | Switches Night Light off, makes a plain write of a tint other than the one on screen, switches Night Light on, and asks which tint the screen shows. Repeats this `trials` times, 5 by default.                                                                                                                                                                        | 16       | 6.2                |
@@ -530,8 +559,9 @@ red refreshes, or when the observer types `quit`. It then prints the `--from` st
   the lead about 1,000 s larger, less any time it waits. Parts 1 to 4 leave a lead of about 6,000 s.
 - Each write of a held drag advances the settings timestamp by 2 s. On a 480 Hz display, `drag-fade`
   leaves a lead of about 17 hours and `drag-rate` about 1 hour. `drag-interference` writes 30 times
-  per second on any display and leaves about 30 minutes. Windows still applies each later library
-  write, because each is stamped above the one before. The lead shrinks only as real time passes.
+  per second by default on any display and leaves about 30 minutes; with `--rate 240`, it leaves
+  about 4 hours. Windows still applies each later library write, because each is stamped above the
+  one before. The lead shrinks only as real time passes.
 - A slider write during a lead leaves `Cloud` ahead of real time by that lead.
 - Cases that restart `explorer.exe` hide the taskbar for a few seconds.
 - `revert-window` makes the screen flicker for about 2 minutes.
@@ -608,6 +638,10 @@ answers about a tint, 72 named the tint the question checked for:
 The observer also gave 17 answers about how a fade looked. `write-while-off`, added to part 6
 afterward, ran on its own at 07:57 UTC, and its 5 answers named the stored tint.
 
+`slider-stamps` and two more `drag-interference` runs, at 30 and 240 writes per second, ran on their
+own from 18:35 to 18:59 UTC with the current library. Each of their 6 answers named the tint the
+question checked for.
+
 ### Recheck the findings
 
 Run suite parts 1 to 6 under `just trace`, as [Commands](#commands) shows. Then, for each case,
@@ -653,7 +687,8 @@ fields:
     observed during a stale-timestamp block was stamped above it. Slider writes stamped at or below
     the highest timestamp during a fade were ignored (finding 15).
   - Held drags at fewer than 30 writes per second.
-  - A slider drag during a fade whose steps are seconds apart, such as a ramp.
+  - What the screen shows during a slider drag while a program writes seconds apart, as a ramp does.
+  - Slider drags during fades between 30 and 240 writes per second.
   - Whether `explorer.exe` ignores state writes stamped at or below the highest state timestamp it
     has applied, and whether Windows reverts state writes stamped below the state's `Cloud`
     timestamp.
