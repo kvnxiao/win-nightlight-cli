@@ -234,9 +234,9 @@ enum Case {
     },
     /// Check whether a stale-timestamp block survives an explorer.exe restart.
     StaleTimestampSurvivesRestart,
-    /// Write below Cloud twice, which Windows reverts, with Night Light off,
-    /// switch it on, and check whether refreshes below and above the burst
-    /// peak apply.
+    /// Twice write below Cloud, which Windows reverts, refresh, and switch
+    /// Night Light off. Then switch it on and check whether refreshes below and
+    /// above the burst peak apply.
     RevertsWhileOff {
         /// Refreshes that advance the timestamp before the reverts.
         #[arg(default_value_t = DEFAULT_BURST)]

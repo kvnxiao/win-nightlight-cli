@@ -290,9 +290,9 @@ pub(crate) fn stale_timestamp_survives_restart(session: &mut Session) -> anyhow:
     Ok(())
 }
 
-/// Write below `Cloud` twice, which Windows reverts, with Night Light switched
-/// off, switch it on, and check whether a refresh below the burst peak and one
-/// above it apply.
+/// Twice write below `Cloud`, which Windows reverts, refresh, and switch Night
+/// Light off, so the second write is made with Night Light off. Then switch it
+/// on and check whether a refresh below the burst peak and one above it apply.
 ///
 /// With `cloud_ahead`, a slider drag first moves `Cloud` ahead of real time,
 /// so the refreshes after both reverts reuse the same timestamps, and the
