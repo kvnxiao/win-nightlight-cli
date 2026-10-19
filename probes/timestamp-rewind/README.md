@@ -84,10 +84,12 @@ naming the one the step checked for, and its results matched the earlier runs.
 
 ## Findings
 
-Counts cover every run that checked the claim, including the exploratory runs before the suite
-([Results and traces](#results-and-traces) lists them). Hyphenated names in code font, such as
-`revert-window`, are cases from [Cases](#cases). Statements about what `explorer.exe` keeps in
-memory are inferences from its behavior and from Process Monitor traces.
+Counts cover every run on the [test machine](#test-machine) that checked the claim, including the
+exploratory runs before the suite ([Runs before the suite](#runs-before-the-suite) describes
+them). The repository does not include the results files or traces of these runs;
+[Recheck the findings](#recheck-the-findings) describes how to reproduce them. Hyphenated names
+in code font, such as `revert-window`, are cases from [Cases](#cases). Statements about what
+`explorer.exe` keeps in memory are inferences from its behavior and from Process Monitor traces.
 
 ### 1. Only Windows Settings writes update the `Cloud` timestamp
 
@@ -232,13 +234,13 @@ rewound. A sweep was 257 ordinary refreshes at up to 144 Hz that stepped the tem
 6500 K down to 2400 K and back up, about 30 K per refresh. Only run 1 made a second sweep after its
 rewind.
 
-In the third run (`results/rewind-1792361568.jsonl`), the display already ignored the first sweep,
+In the third run, the display already ignored the first sweep,
 and from then on it ignored every settings write. This included writes stamped above every earlier
 maximum. When the observer used the Strength slider in Windows Settings, pressing the slider, which
 turns preview on, changed the display, but dragging and releasing it did not. Signing out and back
 in cleared the state. The Windows Application log shows no `explorer.exe` crash in that period.
 
-The second run (`results/rewind-1792360787.jsonl`), the last one before that state, had these
+The second run, the last one before that state, had these
 conditions:
 
 - A sweep.
@@ -379,8 +381,8 @@ Each case writes `results/<case>-<unix seconds>.jsonl`, one JSON record per line
   stays on screen if the block holds.
 - Records specific to a case, such as `trial_outcome` or `refresh_after_revert`.
 
-`just trace` writes `traces/trace-<unix seconds>.pml` and its summary `.tsv`. Git ignores
-`traces/` because captures reach about 90 MB. Each summary line has, separated by tabs:
+`just trace` writes `traces/trace-<unix seconds>.pml` and its summary `.tsv`. Captures reach about
+90 MB. Git ignores both `results/` and `traces/`. Each summary line has, separated by tabs:
 
 1. Milliseconds since the first event.
 2. Process name.
@@ -410,44 +412,26 @@ The suite ran on 2026-10-19 from 02:10 to 02:28 UTC. Of 134 answers, 115 named t
 checked for. All 19 others came in steps that check whether a refresh applied, where a finding
 predicts the refresh is ignored, and each named the tint already on screen.
 
-| Part | Step | Case                                      | Results file                                           |
-| :--- | :--- | :---------------------------------------- | :----------------------------------------------------- |
-| 1    | 1    | `reverts-while-off --cloud-ahead`         | `reverts-while-off-1792375803.jsonl`                   |
-| 1    | 2    | `revert`                                  | `revert-1792376287.jsonl`                              |
-| 1    | 3    | `cloud-boundary`                          | `cloud-boundary-1792376292.jsonl`                      |
-| 1    | 4    | `revert-window`                           | `revert-window-1792376298.jsonl`                       |
-| 1    | 5    | `reverts-while-off`                       | `reverts-while-off-1792376407.jsonl`                   |
-| 1    | 6    | `revert-after-freeze`                     | `revert-after-freeze-1792376430.jsonl`                 |
-| 2    | 1    | `freeze`                                  | `freeze-1792376479.jsonl`                              |
-| 2    | 2    | `held-preview-during-freeze`              | `held-preview-during-freeze-1792376492.jsonl`          |
-| 2    | 3    | `switch-release freeze`                   | `switch-release-1792376509.jsonl`                      |
-| 2    | 4    | `preview-timing freeze 1`                 | `preview-timing-1792376523.jsonl`                      |
-| 2    | 5    | `preview-timing freeze 4 --timing 0/0`    | `preview-timing-1792376552.jsonl`                      |
-| 3    | 1    | `preview-timing none 1`                   | `preview-timing-1792376605.jsonl`                      |
-| 3    | 2    | `quick-settings-reader`                   | `quick-settings-reader-1792376632.jsonl`               |
-| 3    | 3    | `restart-shellhost`                       | `restart-shellhost-1792376646.jsonl`                   |
-| 3    | 4    | `freeze-survives-restart`                 | `freeze-survives-restart-1792376659.jsonl`             |
-| 3    | 5    | `switch-release explorer-restart`         | `switch-release-1792376683.jsonl`                      |
-| 3    | 6    | `preview-timing explorer-restart 1`       | `preview-timing-1792376708.jsonl`                      |
-| 4    | 1    | `explorer-restart-after-freeze`           | `explorer-restart-after-freeze-1792376775.jsonl`       |
-| 4    | 2    | `held-preview-after-explorer-restart`     | `held-preview-after-explorer-restart-1792376796.jsonl` |
-| 4    | 3    | `lower-cloud`                             | `lower-cloud-1792376820.jsonl`                         |
-| 4    | 4    | `reset-both`                              | `reset-both-1792376829.jsonl`                          |
-| 4    | 5    | `restart-explorer`                        | `restart-explorer-1792376840.jsonl`                    |
+### Recheck the findings
+
+Run the four suite parts under `just trace`, as [Commands](#commands) shows. Then, for each case,
+compare its results file and the trace summary with the findings that [Cases](#cases) lists for
+it. `preview-reads` and `reverts` print the trace measurements for findings 2, 5, and 7. Results
+can differ on another Windows build, display, or observer; the `environment` record at the start
+of each results file names the build and display.
 
 ### Runs before the suite
 
-- `rewind-*.jsonl`, 2026-10-18 from 21:46 to 22:41 UTC: the four runs of the first version of this
-  probe, described in finding 12. Its code is no longer in the repository. Run 1 reported that its
-  second sweep, stamped below the first sweep's maximum, changed the display. The later cases write
-  tints that differ clearly from each other, and they show that such refreshes are ignored
-  (finding 3), so that report is treated as misjudged. Run 3 already showed the state in
-  finding 12, and run 4 followed the sign-out.
-- The other files from 2026-10-18 23:33 UTC to 2026-10-19 01:58 UTC are exploratory runs of the
-  current cases and their earlier versions. Their questions named the tint the step checked for and
-  took yes or no. `held-preview-duration-*` files come from an earlier version of `preview-timing`
-  that varied only the hold. Files that end with a `stopped` record ended before their first
-  measurement.
+- 2026-10-18 from 21:46 to 22:41 UTC: the four runs of the first version of this probe, described
+  in finding 12. Its code is no longer in the repository. Run 1 reported that its second sweep,
+  stamped below the first sweep's maximum, changed the display. The later cases write tints that
+  differ clearly from each other, and they show that such refreshes are ignored (finding 3), so
+  that report is treated as misjudged. Run 3 already showed the state in finding 12, and run 4
+  followed the sign-out.
+- 2026-10-18 23:33 UTC to 2026-10-19 01:58 UTC: exploratory runs of the current cases and their
+  earlier versions. Their questions named the tint the step checked for and took yes or no. Four
+  runs came from an earlier version of `preview-timing` that varied only the hold, and three
+  stopped before their first measurement.
 
 ## Test machine
 
