@@ -428,13 +428,15 @@ pub(crate) fn drag_rate(session: &mut Session, rounds: u32) -> anyhow::Result<()
     say(&format!("Rate sweep results:\n{}", summary.join("\n")))
 }
 
-/// Hold a slider drag that fades between neutral and red for 30 s while the
-/// observer drags the Windows Settings slider, then restore yellow with a
-/// per-step drag, as an application that manages the temperature would.
-pub(crate) fn drag_interference(session: &mut Session) -> anyhow::Result<()> {
+/// Hold a slider drag that fades between neutral and red for 30 s at
+/// `rate_hz`, 30 by default, while the observer drags the Windows Settings
+/// slider, then restore yellow with a per-step drag, as an application that
+/// manages the temperature would.
+pub(crate) fn drag_interference(session: &mut Session, rate_hz: Option<u32>) -> anyhow::Result<()> {
+    let rate_hz = rate_hz.unwrap_or(INTERFERENCE_RATE_HZ);
     let drag = Fade::Held {
         duration: INTERFERENCE_DRAG,
-        rate_hz: INTERFERENCE_RATE_HZ,
+        rate_hz,
     };
     confirm_lead(session, drag.writes()? + 2)?;
     session.require_working_display()?;
@@ -448,17 +450,12 @@ pub(crate) fn drag_interference(session: &mut Session) -> anyhow::Result<()> {
         INTERFERENCE_DRAG.as_secs()
     ))?;
     count_down("the probe's drag begins.")?;
-    let half_period = INTERFERENCE_RATE_HZ * INTERFERENCE_PERIOD_SECS / 2;
-    held_drag(
-        session,
-        INTERFERENCE_DRAG,
-        INTERFERENCE_RATE_HZ,
-        |index, _steps| {
-            let position = index % (2 * half_period);
-            let toward_red = half_period - position.abs_diff(half_period);
-            interpolate(Tint::Neutral, Tint::Red, toward_red, half_period)
-        },
-    )?;
+    let half_period = rate_hz * INTERFERENCE_PERIOD_SECS / 2;
+    held_drag(session, INTERFERENCE_DRAG, rate_hz, |index, _steps| {
+        let position = index % (2 * half_period);
+        let toward_red = half_period - position.abs_diff(half_period);
+        interpolate(Tint::Neutral, Tint::Red, toward_red, half_period)
+    })?;
     session.snapshot("after_interference")?;
     let restore = step_drag(session, ColorTemperature::new(Tint::Yellow.kelvin())?)?;
     session.record("restore_after_interference", restore)?;

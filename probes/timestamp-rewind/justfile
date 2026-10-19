@@ -48,7 +48,8 @@ drag-fade *flags:
 
 drag-rate rounds="2": (_run "drag-rate" rounds)
 
-drag-interference: (_run "drag-interference")
+drag-interference *flags:
+    {{probe}} drag-interference {{flags}} || [ $? -eq 3 ]
 
 drag-hold: (_run "drag-hold")
 

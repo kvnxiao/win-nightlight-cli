@@ -138,7 +138,7 @@ const SUITE: [(u8, Case); 29] = [
     (5, Case::DragFade { rate: None }),
     (5, Case::DragRate { rounds: 2 }),
     (5, Case::SliderStamps),
-    (5, Case::DragInterference),
+    (5, Case::DragInterference { rate: None }),
     (5, Case::DragHold),
     (6, Case::PlainWrite { trials: 10 }),
     (6, Case::WriteWhileOff { trials: 5 }),
@@ -271,7 +271,11 @@ enum Case {
     SliderStamps,
     /// Hold a slider drag while the observer drags the Windows Settings
     /// slider, then restore the probe's temperature with a per-step drag.
-    DragInterference,
+    DragInterference {
+        /// Writes per second during the held drag; 30 by default.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=1000))]
+        rate: Option<u32>,
+    },
     /// Hold preview on for two minutes while Night Light is switched off,
     /// Windows Settings opens, and explorer.exe restarts.
     DragHold,
@@ -378,11 +382,9 @@ fn run(case: Case, observer: Observer) -> anyhow::Result<()> {
             cases::drag::drag_rate(session, rounds)
         }),
         Case::SliderStamps => Session::run("slider-stamps", observer, cases::slider::slider_stamps),
-        Case::DragInterference => Session::run(
-            "drag-interference",
-            observer,
-            cases::drag::drag_interference,
-        ),
+        Case::DragInterference { rate } => Session::run("drag-interference", observer, |session| {
+            cases::drag::drag_interference(session, rate)
+        }),
         Case::DragHold => Session::run("drag-hold", observer, cases::drag::drag_hold),
         Case::PlainWrite { trials } => Session::run("plain-write", observer, |session| {
             cases::plain::plain_write(session, trials)
