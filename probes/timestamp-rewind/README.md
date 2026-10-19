@@ -1,7 +1,7 @@
 # Night Light timestamp rewind probe
 
 This interactive probe tests when Night Light settings writes change the display. It covers
-backward timestamps, `explorer.exe` restarts, preview timing, fades, and interference from the Strength
+backward timestamps, `explorer.exe` restarts, preview timing, transitions, and interference from the Strength
 slider in Windows Settings.
 
 **The probe changes live Night Light settings and needs an observer at the display.** Run its cases
@@ -21,17 +21,17 @@ The probe found:
 - **Forced `explorer.exe` restarts caused a different block.** Plain writes and previews lasting about
   0.2 ms were ignored. Slider writes or previews lasting about 9 ms or longer restored updates in
   the measured trials (finding 7).
-- **Held previews supported gradual fades.** Fades looked gradual at all tested rates, from 30 to
+- **Held previews supported gradual transitions.** Transitions looked gradual at all tested rates, from 30 to
   480 writes per second, including after an `explorer.exe` restart (findings 13 and 14).
-- **Fast fades interfered with the slider.** Most slider writes had timestamps below the fade's
+- **Frequent transition writes interfered with the slider.** Most slider writes had timestamps below the transition's
   latest writes. Visual observations showed the slider's temperature only briefly; later runs recorded timestamps
-  without observing that part of the fade (finding 15).
+  without observing that part of the transition (finding 15).
 - **Plain writes worked in normal conditions.** They were ignored after a restart or a timestamp rewind
   in the tested cases (finding 16).
 
 All measurements came from one machine, Windows build, display, and observer. They do not establish
 Windows API guarantees. Suite parts 1–4 repeated the earlier timestamp and restart experiments;
-parts 5–6 tested fades and plain writes.
+parts 5–6 tested transitions and plain writes.
 
 - For application guidance, read [Color Temperature Transitions](../../docs/color-temperature-transitions.md).
 - To reproduce a result, see [Run the probe](#run-the-probe) and [Cases](#cases).
@@ -54,14 +54,14 @@ parts 5–6 tested fades and plain writes.
 - **Preview:** a flag that asks Windows to apply the stored temperature temporarily, even while
   Night Light is off. Windows Settings normally turns it on when the Strength slider is pressed
   and off when released. Finding 15 records a release without a preview-off write during a
-  concurrent fade.
-- **Plain write:** one settings write that changes the temperature without preview, as
+  concurrent transition.
+- **Plain write:** a settings write that changes the temperature without changing the preview flag, as
   `Nightlight::set_color_temperature` makes.
-- **Fade:** a temperature change made of many small steps, here usually from neutral to red. The
-  [color temperature transitions guide](../../docs/color-temperature-transitions.md) calls a
-  gradual change longer than 30 s a ramp.
+- **Transition:** a color temperature change made of small steps, here usually from neutral to red.
+  The [application guide](../../docs/color-temperature-transitions.md) uses **short transition**
+  for changes lasting up to 30 s and **long transition** for longer changes.
 - **Refresh:** a sequence of settings writes meant to make `explorer.exe` apply the stored
-  temperature to the display. The probe makes two kinds:
+  temperature to the display. Unless qualified, “refresh” means an ordinary refresh. The probe makes two kinds:
   - **Ordinary refresh:** a write of temperature `t` with preview on, then a write that turns
     preview off about 0.2 ms later. The probe makes it with `Nightlight::preview_color_temperature`
     and `Nightlight::end_preview`. Version 0.4.0 of the library made the same two writes with
@@ -72,7 +72,7 @@ parts 5–6 tested fades and plain writes.
     temperature, waits `gap` ms, writes the new temperature with preview still on, waits `hold` ms,
     and turns preview off. The probe restores the original temperature with a 50/50 preview
     refresh.
-- **Held drag:** a fade made with the preview methods of `win-nightlight-lib` 0.5.0, the way
+- **Held drag:** a transition made with the preview methods of `win-nightlight-lib` 0.5.0, the way
   dragging the Strength slider makes one. `start_preview` turns preview on, one
   `preview_color_temperature` call per step writes the next temperature at a fixed rate, and
   `end_preview` turns preview off. Each write advances the settings timestamp by at least 2 s.
@@ -148,7 +148,7 @@ traces.
   seconds later. The probe's 59 state writes did not change the state's `Cloud` record.
 - Windows Settings stamps each slider write 2 s after its own previous write or a settings value it
   read ([finding
-  15](#15-while-a-fade-writes-faster-than-windows-settings-windows-ignores-the-slider)). In the two
+  15](#15-while-a-transition-writes-faster-than-windows-settings-windows-ignores-the-slider)). In the two
   drags of `slider-stamps` in which the probe only watched, with no other writer, each of the 56
   slider writes was stamped 2 s after the stored timestamp. A slider drag during a lead therefore
   leaves `Cloud` ahead of real time.
@@ -328,11 +328,11 @@ Four replays did not reproduce the state:
 
 None of the replays made a sweep or repeated the exact writes of the first probe version.
 
-### 13. Fades with preview held on look gradual at 30 to 480 writes per second, including after a restart
+### 13. Transitions with preview held on look gradual at 30 to 480 writes per second, including after a restart
 
 - In `drag-fade`, held drags of 1 s and 30 s at 480 writes per second looked gradual and ended on
-  red in 4 of 4 fades, including right after an `explorer.exe` restart. Per-step drags 3 s apart
-  changed the screen in visible steps and ended on red in 2 of 2 fades, including after a restart.
+  red in 4 of 4 transitions, including right after an `explorer.exe` restart. Per-step drags 3 s apart
+  changed the screen in visible steps and ended on red in 2 of 2 transitions, including after a restart.
 - In `drag-rate`, 1-second held drags from neutral to red looked gradual at 30, 60, 144, 240, and
   480 writes per second: 10 of 10 answers, in 2 rounds of random order, without the observer knowing
   the rate. The case did not test rates below 30.
@@ -349,7 +349,7 @@ start, after the observer switched Night Light off, with the Night Light page of
 open, after an `explorer.exe` restart, and after 2 minutes. When the probe then turned preview off,
 with Night Light still off, the screen returned to no tint.
 
-### 15. While a fade writes faster than Windows Settings, Windows ignores the slider
+### 15. While a transition writes faster than Windows Settings, Windows ignores the slider
 
 Most slider writes had timestamps at or below the highest earlier write. Visual observations showed the slider's temperature only briefly; the remaining runs support a timestamp-based
 inference rather than a direct observation of the display.
@@ -378,19 +378,19 @@ maximum:
   were stamped 2 s after Windows Settings' previous slider write. After the other 3, the next slider
   write came 175–200 ms later and was stamped 2 s after the probe write.
 
-#### Slider and fade writes during interference
+#### Slider and transition writes during interference
 
 - Windows Settings wrote at most about once every 60 ms, and the probe every 33 ms or more often, so
-  the stored timestamp stayed ahead of the slider writes. In the seven fades of `drag-interference`
+  the stored timestamp stayed ahead of the slider writes. In the seven transitions of `drag-interference`
   and `restart-after-slider`, 273 of 286 slider writes were stamped at or below the highest earlier
   timestamp. All 13 others came in the first `drag-interference` run, in which the observer pressed
   the slider several times: 9 came after the probe stopped writing, and the other 4 each came right
-  after a press. In the first two runs, the observer saw the fade continue, and the screen rarely
+  after a press. In the first two runs, the observer saw the transition continue, and the screen rarely
   showed the slider's temperature, each time for a few frames; the later runs did not record what
-  the screen showed during the fade.
+  the screen showed during the transition.
 - A slider write's timestamp can come from a read made well before the write: a write stamped from
   Windows Settings' own previous write takes its timestamp from the same read as that previous
-  write. During the seven fades, a slider write's timestamp came from a read made up to 1,456 ms
+  write. During the seven transitions, a slider write's timestamp came from a read made up to 1,456 ms
   earlier at 30 writes per second, 552 ms at 60, and 191 ms at 240. At 144, it came from a value
   stored up to 208 ms earlier. The trace does not show when Windows Settings read that value, and
   the longest delay from a traced read at 144 was 77 ms. Meanwhile, the probe's timestamps rose
@@ -402,7 +402,7 @@ maximum:
   timestamp. Each probe write after it was stamped 2 s higher than the stored timestamp, so the next
   one to four probe writes were also stamped at or below the highest earlier timestamp: 217 probe
   writes in the two runs. Windows presumably ignored these writes too; the probe writes after them
-  were stamped above the highest earlier timestamp, and the fade continued. In the last two
+  were stamped above the highest earlier timestamp, and the transition continued. In the last two
   `drag-interference` runs, 0 of 8,122 probe writes were stamped at or below the highest earlier
   timestamp.
 
@@ -420,26 +420,26 @@ maximum:
 - In the first run, Windows Settings wrote preview off 31 times as the observer pressed and
   released the slider. 25 probe writes were made while preview was off, and each of them turned
   preview back on.
-- In the second run, the observer pressed, dragged, and released the slider during an ongoing fade.
+- In the second run, the observer pressed, dragged, and released the slider during an ongoing transition.
   All traced Windows Settings writes had preview on. The trace recorded no preview-off write,
   failed or successful, and the probe never read preview as off.
 - Every later traced release turned preview off at the release: 13 of 13, 5 of them during a probe
-  fade. In each of the last two `drag-interference` runs, one probe write found preview off and
+  transition. In each of the last two `drag-interference` runs, one probe write found preview off and
   turned it back on.
-- In the last three `drag-interference` runs, a per-step drag to yellow after the fade applied. In
+- In the last three `drag-interference` runs, a per-step drag to yellow after the transition applied. In
   the first run, the observer was still dragging at that point. The 9 slider writes made after the
   probe stopped writing were stamped above the stored timestamp, and the screen showed the slider's
   temperature.
 
 With competing writes stopped, clicking the native Strength slider or dragging and releasing it
 again starts a fresh preview-on/off cycle. Use that interaction to clear leftover preview manually.
-The release observed during the fade does not establish a persistent failure of the native slider.
+The release observed during the transition does not establish a persistent failure of the native slider.
 
-#### Hypothesis: slider release raced with fade writes
+#### Hypothesis: slider release raced with transition writes
 
-Releasing the mouse is a one-time event, while the probe keeps writing fade updates. A plausible
+Releasing the mouse is a one-time event, while the probe keeps writing transition updates. A plausible
 explanation is that the release's preview-off update used an older timestamp and lost a race with
-a newer fade update. If that release update is dropped, the ongoing fade keeps preview on until
+a newer transition update. If that release update is dropped, the ongoing transition keeps preview on until
 another action clears it.
 
 The trace does not establish whether the release produced an update internally or where such an
@@ -459,7 +459,7 @@ stale-timestamp block, the observer confirmed that the block held.
 | After an `explorer.exe` restart            | 0 of 10  |
 | During a stale-timestamp block             | 0 of 10  |
 
-A fade of 20 plain writes, 3 s apart, changed the screen in visible steps and ended on red.
+A transition of 20 plain writes, 3 s apart, changed the screen in visible steps and ended on red.
 `explorer.exe` read each write within 0.5 ms.
 
 In `write-while-off`, switching Night Light on after a plain write made while it was off showed
@@ -488,7 +488,7 @@ the stored temperature: 5 of 5 trials.
   `apply_color_temperature` makes a per-step drag while Night Light is on, `set_color_temperature`
   makes a plain write, and `start_preview`, `preview_color_temperature`, and `end_preview` make a
   held drag. The [color temperature transitions guide](../../docs/color-temperature-transitions.md)
-  describes which to use for one-off changes, ramps, and fades.
+  describes which to use for immediate changes and short or long transitions.
 
 ## Cases
 
@@ -616,11 +616,11 @@ Adds a slider write before the burst, which moves `Cloud` ahead of real time, an
 
 ### `drag-fade [--rate <hz>]`
 
-Fades from neutral to red with a 1-second and a 30-second held drag at `rate` writes per second, by default the refresh rate of the fastest active display, and with 20 per-step drags 3 s apart.
+Changes from neutral to red with a 1-second and a 30-second held drag at `rate` writes per second, by default the refresh rate of the fastest active display, and with 20 per-step drags 3 s apart.
 
-Makes the three fades, then each again after an `explorer.exe` restart.
+Makes the three transitions, then each again after an `explorer.exe` restart.
 
-After each fade, asks how the screen changed and whether it ended on red.
+After each transition, asks how the screen changed and whether it ended on red.
 
 ### `drag-rate [rounds]`
 
@@ -628,7 +628,7 @@ Makes 1-second held drags from neutral to red at 30, 60, 144, and 240 writes per
 
 Runs 2 rounds by default, each in a new random order.
 
-Asks how each fade looked without naming its rate.
+Asks how each transition looked without naming its rate.
 
 ### `slider-stamps`
 
@@ -642,13 +642,13 @@ Run it under `just trace`.
 
 ### `drag-interference [--rate <hz>]`
 
-Makes a 30-second held drag at `rate` writes per second, 30 by default, that fades between neutral and red while the observer drags and releases the slider in Windows Settings once.
+Makes a 30-second held drag at `rate` writes per second, 30 by default, that changes between neutral and red while the observer drags and releases the slider in Windows Settings once.
 
 Then makes a per-step drag to yellow and asks whether it applied.
 
 ### `restart-after-slider [--rate <hz>]`
 
-Makes a held drag at `rate` writes per second, 240 by default, that fades near neutral while the observer drags and releases the slider in Windows Settings once.
+Makes a held drag at `rate` writes per second, 240 by default, that changes the temperature near neutral while the observer drags and releases the slider in Windows Settings once.
 
 Stops writing at the release, then makes a per-step drag to red through a new handle and one to yellow through a new handle with the startup margin, and asks after each which tint shows.
 
@@ -668,7 +668,7 @@ Then turns preview off.
 
 ### `plain-write [trials]`
 
-Fades from neutral to red with 20 plain writes 3 s apart and asks how the screen changed.
+Changes from neutral to red with 20 plain writes 3 s apart and asks how the screen changed.
 
 Then makes `trials` plain writes, 10 by default, in each of four conditions: normal (no block), after switching Night Light off and on, after an `explorer.exe` restart, and during a stale-timestamp block.
 
@@ -727,7 +727,7 @@ unsure. The probe discards lines other than `quit` that were typed before a ques
 appeared, so a line typed early does not answer it. Type `quit` to stop: the probe restores Night
 Light and exits with code 3, which the recipes treat as success.
 
-After a fade, the probe also asks how the screen changed. Type:
+After a transition, the probe also asks how the screen changed. Type:
 
 - `1` if it changed gradually without visible steps.
 - `2` if it changed gradually in visible steps.
@@ -785,7 +785,7 @@ Each case writes `results/<case>-<unix seconds>.jsonl`, one JSON record per line
   lead, the temperature, the preview flag, and the `explorer.exe` and `ShellHost.exe` process IDs.
 - `observer`: the question's label, the tint the question checks for, and the observer's answer. A
   question about a refresh checks for that refresh's tint. A question about a block checks for the
-  tint that stays on screen if the block holds. An answer about a fade has `question: smoothness`
+  tint that stays on screen if the block holds. An answer about a transition has `question: smoothness`
   and one of `gradual`, `stepped`, `at_once`, `unchanged`, or `other`.
 - `held_drag`: for each held drag, the planned rate and duration, the number of steps, the median,
   99th percentile, and largest time between steps, and the numbers of the steps, counted from 1, at
@@ -839,7 +839,7 @@ answers about a tint, 72 named the tint the question checked for:
 - The last one answered whether the per-step drag to yellow in the first `drag-interference` run
   applied. The observer was still dragging the slider at that point.
 
-The observer also gave 17 answers about how a fade looked. `write-while-off`, added to part 6
+The observer also gave 17 answers about how a transition looked. `write-while-off`, added to part 6
 afterward, ran on its own at 07:57 UTC, and its 5 answers named the stored tint.
 
 `slider-stamps` and two more `drag-interference` runs, at 30 and 240 writes per second, ran on their
@@ -894,9 +894,9 @@ fields:
 - Not tested:
   - A slider write stamped below the maximum during a stale-timestamp block. Every slider write
     observed during a stale-timestamp block was stamped above it. Slider writes stamped at or below
-    the highest timestamp during a fade were ignored (finding 15).
+    the highest timestamp during a transition were ignored (finding 15).
   - Held drags at fewer than 30 writes per second.
-  - What the screen shows during a slider drag while a program writes seconds apart, as a ramp does.
+  - What the screen shows during a slider drag while a program writes seconds apart, as a long transition can.
   - Whether `explorer.exe` ignores state writes stamped at or below the highest state timestamp it
     has applied, and whether Windows reverts state writes stamped below the state's `Cloud`
     timestamp.
@@ -905,7 +905,7 @@ fields:
     the probe does.
   - Whether system load changes the revert delays.
 - The trace does not establish whether mouse-up produced an update internally or where such an
-  update was dropped during a concurrent fade (finding 15). A race with newer fade updates is plausible. Applications should finish with
+  update was dropped during a concurrent transition (finding 15). A race with newer transition updates is plausible. Applications should finish with
   `end_preview`; users can clear preview by stopping other writers and using the native slider again.
 - Process Monitor deleted some early capture files, for an unknown reason. The trace recipe renames
   each capture after it ends, and no renamed capture has been lost.

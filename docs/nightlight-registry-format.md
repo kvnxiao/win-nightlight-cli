@@ -218,8 +218,8 @@ decode: varint([0xCC, 0x2B]) = 5580, zigzag_decode(5580) = 2790
 
 Windows 11 Settings uses field 70 to preview the selected color temperature, even while Night
 Light is off. Preview normally stays true during a drag and returns to false afterward. During a
-concurrent probe fade, a slider release was observed without a preview-off write. The one-time
-mouse-up update may have used an older timestamp and lost a race with ongoing fade updates.
+concurrent probe transition, a slider release was observed without a preview-off write. The one-time
+mouse-up update may have used an older timestamp and lost a race with ongoing transition updates.
 The trace does not show whether the release produced an update internally or where such an update
 was dropped. Ignoring an already stored write would not explain its absence from the trace.
 

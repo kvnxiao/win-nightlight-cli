@@ -2,7 +2,7 @@
 
 ## Use the library
 
-- [Color Temperature Transitions](color-temperature-transitions.md) — Choose methods for single changes, ramps, and fades; handle slider interference and ignored writes.
+- [Color Temperature Transitions](color-temperature-transitions.md) — Choose methods for immediate changes and transitions; handle slider interference and ignored writes.
 - [Change Notifications](change-notifications.md) — Wait for Night Light changes and read decoded snapshots.
 
 ## Understand the format

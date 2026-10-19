@@ -170,7 +170,7 @@ Choose a method based on the change you want to make:
 | :-- | :-- |
 | One new temperature | `apply_color_temperature(t)`; also used by `wnl temp` |
 | Store a temperature or make a long, gradual change | `set_color_temperature(t)` |
-| Make a short fade | `start_preview()`, then `preview_color_temperature(t)` for each step, then `end_preview()` |
+| Make a short transition | `start_preview()`, then `preview_color_temperature(t)` for each step, then `end_preview()` |
 
 **Preview** makes Windows show the stored temperature even while Night Light is off. Windows
 Settings normally enables it while the user holds the Strength slider.
@@ -195,8 +195,7 @@ Avoid overlapping updates: another writer can change settings between a read and
 write. `write_settings` writes the record supplied by the caller. A successful registry write does
 not confirm that the display changed.
 
-See the [color temperature transitions guide](docs/color-temperature-transitions.md) for ramp and
-fade examples, write rates, cleanup, and interactions with the slider.
+See the [color temperature transitions guide](docs/color-temperature-transitions.md) for transition examples, write rates, cleanup, and interactions with the slider.
 
 ### Settings timestamps
 
