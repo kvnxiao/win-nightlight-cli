@@ -60,8 +60,8 @@ Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Cloud\
 The first path is the settings' Cloud record. It stores a timestamp without the temperature or
 other settings. In the probe traces:
 
-- Explorer copied the timestamp of Windows Settings writes into this record, up to 78 ms later.
-- Once, Explorer wrote settings at startup and copied that timestamp into the record 3.3 s later.
+- `explorer.exe` copied the timestamp of Windows Settings writes into this record, up to 78 ms later.
+- Once, `explorer.exe` wrote settings at startup and copied that timestamp into the record 3.3 s later.
 - Library settings writes did not update it.
 
 The record has no payload, and its layout differs from the envelope of

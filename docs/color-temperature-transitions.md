@@ -15,9 +15,9 @@ a write can succeed while the display stays the same. This is frustrating to wor
 when another app or the Windows slider is changing the same settings.
 
 The timestamp is part of the problem. It has whole-second precision, even though a fade can write
-many times per second. Explorer behaves as if it remembers the highest timestamp it has applied
-and ignores older or equal timestamps. Explorer and ShellHost also appear to keep in-memory copies
-of Windows settings and can restore them based on timestamp comparisons. ShellHost starts reading
+many times per second. `explorer.exe` behaves as if it remembers the highest timestamp it has applied
+and ignores older or equal timestamps. `explorer.exe` and `ShellHost.exe` also appear to keep in-memory copies
+of Windows settings and can restore them based on timestamp comparisons. `ShellHost.exe` starts reading
 these settings after Quick Settings opens.
 
 That makes the timestamp more than a record of when you wrote a value. Rapid writes advance it
@@ -83,7 +83,7 @@ that is later.
 
 During a fade, the slider can overwrite the stored timestamp with a lower one. The existing handle
 can still write above its own maximum, but a new handle has no record of it. The registry does not
-expose Explorer's remembered maximum.
+expose `explorer.exe`'s remembered maximum.
 
 The startup margin helps with that case:
 
@@ -126,7 +126,7 @@ For a change lasting more than 30 s:
 1. Make the first step with `apply_color_temperature`.
 2. Make subsequent steps with `set_color_temperature`, using small temperature increments.
 3. About once a minute, use `apply_color_temperature` for a step instead. This is intended to recover
-   from an unnoticed Explorer restart; it is not a guaranteed recovery deadline.
+   from an unnoticed `explorer.exe` restart; it is not a guaranteed recovery deadline.
 
 A 10 K increment is a starting point: a 30-second held preview from 6500 K to 1200 K looked gradual
 with those steps. That test used a held preview, so it does not establish how large a ramp step can
@@ -150,7 +150,7 @@ These estimates exclude the startup margin and the extra writes for brief previe
 steps reduce the lead, but may make the change look stepped.
 
 In the probe, writes without preview applied normally and after switching Night Light off and on,
-but were ignored after an Explorer restart. Writes spaced several seconds apart changed the screen
+but were ignored after an `explorer.exe` restart. Writes spaced several seconds apart changed the screen
 in visible steps and reached the final temperature.
 
 ## Fades
@@ -213,7 +213,7 @@ write rate; it does not synchronize writes with frames or guarantee that every w
 Lower rates build less timestamp lead. In the probe, fades looked gradual across the tested range
 of 30–480 writes per second. Rates were presented in random order without telling the observer
 which was running. Rates below 30 were not tested. Held previews also looked gradual immediately
-after an Explorer restart.
+after an `explorer.exe` restart.
 
 Skip temperatures that equal the previous step, as the example does. They do not change the screen
 but still advance the timestamp. For a 30-second fade from 6500 K to 2700 K in 10 K increments:
@@ -248,14 +248,14 @@ A 1-second fade at 240 writes per second adds about 8 minutes of lead before the
 That lead alone did not stop later library writes from applying in the probe: their timestamps
 continued to increase.
 
-The problem arises when another writer lowers the stored timestamp. Explorer may keep ignoring
+The problem arises when another writer lowers the stored timestamp. `explorer.exe` may keep ignoring
 new writes until their timestamps pass its remembered maximum. A handle that wrote that maximum
 can pass it on its next write; a new handle may need many writes, or a wait for real time to catch
 up. Do not try to remove the lead by moving the timestamp backward yourself. See [probe finding
 3](../probes/timestamp-rewind/README.md#3-a-rewind-at-or-above-cloud-stays-in-the-registry-and-causes-a-stale-timestamp-block).
 
 To track the lead, subtract the current time from `Settings::modified`, returned by `read_settings`.
-This measures the stored timestamp's lead, not Explorer's remembered maximum.
+This measures the stored timestamp's lead, not `explorer.exe`'s remembered maximum.
 
 ## When the user moves the slider during a gradual change
 
@@ -274,7 +274,7 @@ The next `preview_color_temperature` call then returns `false` and turns it back
 concurrent fade, a release was observed without a preview-off write. The one-time mouse-up update
 may have used an older timestamp and lost a race with ongoing fade updates. The trace does not
 show whether the release produced an update internally or where such an update was dropped.
-Explorer ignoring a stored write alone would not explain its absence from the registry trace.
+`explorer.exe` ignoring a stored write alone would not explain its absence from the registry trace.
 
 Another program can also turn preview off. The return value cannot reliably identify presses,
 drags, or releases.
@@ -310,9 +310,9 @@ drag and release it again to complete a fresh preview-on/off cycle.
 
 ## When Windows ignores the application's writes
 
-A successful write with no visible change does not by itself prove Explorer is ignoring it. Check
+A successful write with no visible change does not by itself prove `explorer.exe` is ignoring it. Check
 whether Night Light is off, whether the temperature changed, and whether another writer replaced
-the settings. One possible cause is that Explorer has already applied a higher timestamp.
+the settings. One possible cause is that `explorer.exe` has already applied a higher timestamp.
 
 These user actions restored updates in the probe:
 
@@ -321,11 +321,11 @@ These user actions restored updates in the probe:
   to release the restart block. The probe used `taskkill /f /im explorer.exe`, followed by
   `explorer.exe`; Task Manager's Restart command was not tested. The taskbar disappears briefly
   and open File Explorer windows close.
-- **Sign out and back in.** This restored updates in an early run, before restarting Explorer or
-  ShellHost had been considered ([finding
+- **Sign out and back in.** This restored updates in an early run, before restarting `explorer.exe` or
+  `ShellHost.exe` had been considered ([finding
   12](../probes/timestamp-rewind/README.md#12-signing-out-restored-updates-before-process-restarts-were-tested)).
   It does not establish that signing out was necessary. After signing back in, even back-to-back
   preview-on/off writes applied.
 
-Suggest these actions to the user when needed. The application should not restart Explorer itself,
+Suggest these actions to the user when needed. The application should not restart `explorer.exe` itself,
 because that interrupts the user's work.

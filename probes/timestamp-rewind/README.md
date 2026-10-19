@@ -1,7 +1,7 @@
 # Night Light timestamp rewind probe
 
 This interactive probe tests when Night Light settings writes change the display. It covers
-backward timestamps, Explorer restarts, preview timing, fades, and interference from the Strength
+backward timestamps, `explorer.exe` restarts, preview timing, fades, and interference from the Strength
 slider in Windows Settings.
 
 **The probe changes live Night Light settings and needs an observer at the display.** Run its cases
@@ -10,19 +10,19 @@ through this directory's `justfile`. The root tasks and CI only build it and run
 ## Summary
 
 Writing temperatures frequently moves the settings timestamp ahead of real time. Moving it backward
-does not reliably undo that effect: Explorer can continue ignoring writes below a previously applied
+does not reliably undo that effect: `explorer.exe` can continue ignoring writes below a previously applied
 timestamp, even though the registry accepts them.
 
 The probe found:
 
 - **A rewind can stop display updates.** Writing below the separate `Cloud` timestamp caused Windows
   to restore an earlier value and release this block, but could overwrite intervening changes
-  (findings 3 and 4). Restarting Explorer also cleared the stale-timestamp block (finding 6).
-- **Forced Explorer restarts caused a different block.** Plain writes and previews lasting about
+  (findings 3 and 4). Restarting `explorer.exe` also cleared the stale-timestamp block (finding 6).
+- **Forced `explorer.exe` restarts caused a different block.** Plain writes and previews lasting about
   0.2 ms were ignored. Slider writes or previews lasting about 9 ms or longer restored updates in
   the measured trials (finding 7).
 - **Held previews supported gradual fades.** Fades looked gradual at all tested rates, from 30 to
-  480 writes per second, including after an Explorer restart (findings 13 and 14).
+  480 writes per second, including after an `explorer.exe` restart (findings 13 and 14).
 - **Fast fades interfered with the slider.** Most slider writes had timestamps below the fade's
   latest writes. Visual observations showed the slider's temperature only briefly; later runs recorded timestamps
   without observing that part of the fade (finding 15).
@@ -90,7 +90,7 @@ parts 5–6 tested fades and plain writes.
   with a burst make 256 refreshes by default.
 - **`Cloud` timestamp:** the timestamp in the `Cloud` record, a separate registry value that stores
   only a timestamp from a settings write made by Windows, usually Windows Settings and once an
-  Explorer startup write in the traces. The
+  `explorer.exe` startup write in the traces. The
   [registry format](../../docs/nightlight-registry-format.md#cloud-record) describes its location
   and layout.
 - **Rewind:** a write that lowers the settings timestamp without changing any setting. The probe
@@ -303,7 +303,7 @@ in restored updates. Restarting `explorer.exe` or `ShellHost.exe` had not been c
 at that point, so this run does not establish that signing out was necessary. The Windows
 Application log shows no `explorer.exe` crash in that period.
 
-Later tests showed that restarting Explorer clears the stale-timestamp block, followed by a
+Later tests showed that restarting `explorer.exe` clears the stale-timestamp block, followed by a
 preview to release the restart block (finding 6). This supports an in-memory state explanation,
 but the earlier state was not reproduced to test either process restart against it.
 
@@ -443,7 +443,7 @@ a newer fade update. If that release update is dropped, the ongoing fade keeps p
 another action clears it.
 
 The trace does not establish whether the release produced an update internally or where such an
-update was dropped. If Windows Settings wrote it and Explorer ignored its older timestamp, the
+update was dropped. If Windows Settings wrote it and `explorer.exe` ignored its older timestamp, the
 write should still appear in the registry trace. The trace recorded no preview-off write, so a
 race before the registry write is plausible. Internal mouse-up handling was not traced.
 

@@ -214,7 +214,7 @@ Frequent writes therefore move timestamps ahead of real time. The handle remembe
 timestamp, so it can keep increasing it even if the slider stores a lower one. A new handle loses
 that history. Its startup margin advances the first settings write by at least 699 s from the
 record's timestamp, instead of 2 s. **This is an estimate, not a guarantee:** it worked in the tested
-restart scenarios, but Windows does not expose the highest timestamp Explorer has applied. The guide
+restart scenarios, but Windows does not expose the highest timestamp `explorer.exe` has applied. The guide
 explains the [margin and its cost](docs/color-temperature-transitions.md#one-handle-per-application-with-a-startup-margin).
 
 The [timestamp rewind probe](probes/timestamp-rewind/README.md) measured these behaviors on Windows
@@ -224,9 +224,9 @@ The [timestamp rewind probe](probes/timestamp-rewind/README.md) measured these b
   ignored writes at or below it. Moving the stored timestamp backward can therefore stop display
   updates.
 - Windows replaced settings writes below the separate `Cloud` timestamp with an earlier Windows
-  settings value. `Cloud` usually followed Windows Settings writes; one Explorer startup write
+  settings value. `Cloud` usually followed Windows Settings writes; one `explorer.exe` startup write
   also updated it.
-- After a forced Explorer restart, plain temperature writes were ignored until a slider interaction
+- After a forced `explorer.exe` restart, plain temperature writes were ignored until a slider interaction
   or a sufficiently long preview. About 9 ms worked in the measured trials; the library's brief
   preview uses 50 ms.
 
