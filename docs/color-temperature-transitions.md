@@ -1,6 +1,6 @@
 # Color Temperature Transitions
 
-`win-nightlight-lib` 0.5.0 lets an application change the Night Light color temperature at once or
+`win-nightlight-lib` lets an application change the Night Light color temperature at once or
 gradually. This guide prescribes which library methods to call for each kind of change and how
 often to write the settings. It also describes what happens when the user moves the slider in
 Windows Settings during a gradual change.
@@ -246,7 +246,7 @@ To see how fast the lead grows, record it after each change: the stored timestam
   2 s after the highest timestamp it has written, so that write is stamped above the slider's write
   and above the highest timestamp written before it. In the two `drag-interference` runs with the
   current library, 0 of the probe's 8,122 writes were stamped at or below the highest timestamp
-  written before them. The first two runs of that case used an earlier 0.5.0 development build that
+  written before them. The first two runs of that case used an earlier development build that
   stamped 2 s after the stored timestamp. In them, 217 fade writes after a slider write were stamped
   at or below the highest timestamp written before them, so Windows presumably ignored them.
 - **When the user releases the slider:** Windows Settings usually turns preview off. The next
