@@ -1,14 +1,17 @@
 # Development
 
-The workspace builds, tests, and lints with unpinned stable Rust and formats with unpinned nightly
-rustfmt. `rust-toolchain.toml` selects stable for `cargo` commands that do not name a toolchain. The
-workspace `Cargo.toml` defines the shared lint baseline, `clippy.toml` configures Clippy, and
-`.rustfmt.toml` configures rustfmt.
+Use stable Rust to build, test, and lint, and nightly rustfmt to format. Neither toolchain is pinned
+to a release. Run `just check` before opening a pull request.
 
-`win-nightlight-lib` and the CLI forbid unsafe code. `win-nightlight-watch` copies the workspace
-lint baseline but sets `unsafe_code = "deny"` so individual Win32 wrapper functions can use scoped
-exceptions. Keep its lint tables synchronized with the workspace. Each unsafe block needs a `SAFETY`
-comment describing handle validity and ownership.
+The shared configuration is in:
+
+- `rust-toolchain.toml`: the default toolchain for Cargo commands.
+- `Cargo.toml`: workspace lints.
+- `clippy.toml` and `.rustfmt.toml`: Clippy and rustfmt settings.
+
+`win-nightlight-lib` and the CLI forbid unsafe code. The watcher uses `unsafe_code = "deny"` so
+individual Win32 wrappers can allow it. Keep the watcher's copied lint tables synchronized with the
+workspace. Each unsafe block needs a `SAFETY` comment describing handle validity and ownership.
 
 ## Setup
 
@@ -52,9 +55,8 @@ The `justfile` defines the tasks that local development and CI share:
 | `just check`               | Runs `lint`, `test`, `doc`, and `dependencies`.                   |
 | `just check-msrv PACKAGE`  | Checks `PACKAGE` with the toolchain named by its `rust-version`.  |
 
-Run `just check` before opening a pull request. CI runs each task that `just check` runs as a
-separate job, plus `just check-msrv` for all three crates and `cargo publish --workspace --dry-run
---locked`.
+CI runs the `just check` tasks as separate jobs. It also checks the minimum supported Rust version
+for the published crates and runs `cargo publish --workspace --dry-run --locked`.
 
 ## Tests
 
@@ -77,13 +79,14 @@ separate job, plus `just check-msrv` for all three crates and `cargo publish --w
 
 ## Probes
 
-`probes/` has interactive experiments that change live Night Light settings, such as the [timestamp
-rewind probe](../probes/timestamp-rewind/README.md). Each probe is a `publish = false` workspace
-member, so `just lint` and `just test` build it and run its unit tests, but neither CI nor any task
-in the root `justfile` runs it. Run a probe only through its own `justfile`, with an observer at the
-display.
+`probes/` has interactive experiments that change live Night Light settings, including the
+[timestamp rewind probe](../probes/timestamp-rewind/README.md).
 
-The timestamp rewind probe's trace tools, which summarize its Process Monitor traces, are a Python
-uv project in `probes/timestamp-rewind/trace/`. `just --justfile probes/timestamp-rewind/justfile
-trace-check` checks its formatting, lint, and types, runs its tests, and audits its dependencies.
-The `Lint Python` workflow runs the same task in CI.
+- Each probe is a `publish = false` workspace member.
+- `just lint` and `just test` build probes and run their unit tests.
+- CI and the root tasks do not run the live experiments. Run those through the probe's own
+  `justfile`, with an observer at the display.
+
+The timestamp probe's Python trace tools are a uv project in `probes/timestamp-rewind/trace/`.
+Run `just --justfile probes/timestamp-rewind/justfile trace-check` to check formatting, lint, types,
+tests, and dependencies. The `Lint Python` workflow runs the same task in CI.

@@ -43,11 +43,10 @@ on, the screen changes right away. While it is off, `temp` stores the temperatur
 shows it when Night Light turns on. Temperatures use kelvin, from 1200K (warmest) to 6500K (no
 tint), with or without the `K`. These commands print nothing on success.
 
-Preview is a temporary tint that Windows shows while the user holds the Strength slider in Windows
-Settings, even when Night Light is off. A program that exits in the middle of a change can leave
-preview on, and the screen then stays tinted after Night Light turns off. `on`, `off`, `toggle`,
-`temp`, and `schedule` also turn preview off. Turning preview off writes the settings value, and
-only when preview was on.
+`on`, `off`, `toggle`, `temp`, and `schedule` also turn off preview. Preview is the temporary tint
+shown while the user holds the Strength slider in Windows Settings, even when Night Light is off.
+If a program exits during a preview, the tint can remain on; these commands clear it. Cleanup writes
+settings only when preview was on.
 
 ```shell
 wnl on
@@ -165,84 +164,75 @@ only settings. Its on/off methods write only state and preserve the schedule.
 
 ### Change the color temperature
 
-Preview is a flag in the settings: while it is on, Windows shows the stored color temperature, even
-while Night Light is off. Windows Settings turns it on while the user holds the Strength slider. A
-ramp is a gradual change over more than 30 s, and a fade is a gradual change over up to 30 s.
-`Nightlight` changes the temperature in three ways:
+Choose a method based on the change you want to make:
 
-| Method                                                         | Writes                                                                                                                                                                  | Use                                   |
-| :------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------ |
-| `apply_color_temperature(t)`                                   | While Night Light is on: `t` with preview on, then preview off after 50 ms. While it is off: `t` with preview off, in one write. No write when both are already stored. | A one-off change; `wnl temp` calls it |
-| `set_color_temperature(t)`                                     | `t` in one write, without changing preview. No write when `t` is already stored.                                                                                        | Storing a temperature, or a ramp step |
-| `start_preview`, `preview_color_temperature(t)`, `end_preview` | One write each: preview on, then `t` with preview on, then preview off.                                                                                                 | A fade with preview held on           |
+| Change | Method |
+| :-- | :-- |
+| One new temperature | `apply_color_temperature(t)`; also used by `wnl temp` |
+| Store a temperature or make a long, gradual change | `set_color_temperature(t)` |
+| Make a short fade | `start_preview()`, then `preview_color_temperature(t)` for each step, then `end_preview()` |
 
-- `apply_color_temperature` ends any preview that was on and returns whether one was. While Night
-  Light is on, it blocks the calling thread for the 50 ms wait. If turning preview off fails three
-  times in a row, it returns an error of kind `ErrorKind::PreviewCleanup`, and preview may stay on;
-  calling it again repeats the whole sequence.
-- The preview methods each write once, even when nothing changes, and return whether preview was on
-  before the call. They do not sleep.
-- `update_settings` and `write_settings` write at most once and do not turn preview on or off
-  themselves. `write_settings` stores the preview flag of the `Settings` it is given.
+**Preview** makes Windows show the stored temperature even while Night Light is off. Windows
+Settings normally enables it while the user holds the Strength slider.
 
-Each method in the table reads the settings and then writes them. Another writer, such as Windows
-Settings or another call, can write in between, and the later write replaces the earlier one. Avoid
-overlapping calls. A successful write does not confirm that the display changed.
+- `apply_color_temperature` briefly turns preview on when Night Light is on. It waits 50 ms, then
+  turns preview off. This happens even when the temperature already matches. When Night Light is
+  off, it stores the temperature with preview off, and skips the write if both already match.
+- `set_color_temperature` makes one write without changing preview. It skips the write if the
+  temperature already matches.
+- The preview methods each write once, even if nothing changes. They do not sleep; the caller
+  controls how long preview stays on.
+
+`apply_color_temperature` and the preview methods return whether preview was on before the call.
+The 50 ms wait blocks the calling thread. If `apply_color_temperature` fails to turn preview off
+in three attempts, it returns `ErrorKind::PreviewCleanup`; preview may remain on. Retrying repeats
+the whole sequence.
+
+For lower-level changes, `update_settings` and `write_settings` write at most once. They store the
+preview flag from the resulting `Settings` record without adding a preview sequence.
+
+Avoid overlapping updates: another writer can change settings between a read and the subsequent
+write. `write_settings` writes the record supplied by the caller. A successful registry write does
+not confirm that the display changed.
+
+See the [color temperature transitions guide](docs/color-temperature-transitions.md) for ramp and
+fade examples, write rates, cleanup, and interactions with the slider.
 
 ### Settings timestamps
 
-Each write of the settings or state value stores a last-modified timestamp in whole seconds.
-Microsoft does not document how Windows uses it, and Windows behaves in ways a writer has to plan
-for:
+Keep one `Nightlight` handle for the application's lifetime. For an application that makes gradual
+changes, use `Nightlight::new().with_startup_margin()` to reduce the risk of ignored writes after
+the application restarts.
 
-- `explorer.exe`, which applies Night Light to the display, ignores a settings write stamped at or
-  below the highest timestamp it has applied. A program that moves the timestamp backward has its
-  later writes ignored until one is stamped above that maximum.
-- Windows keeps a third registry value, `Cloud`, next to the settings value. It stores only the
-  timestamp of the latest Windows Settings write. When a program writes the settings stamped below
-  that timestamp, Windows replaces the write with the last Windows Settings write.
-- After `explorer.exe` restarts, it ignores temperature changes until a preview stays on for about 9
-  ms or longer, or until the user moves the slider in Windows Settings. Switching Night Light on
-  still shows the stored temperature. `apply_color_temperature` keeps preview on for 50 ms while
-  Night Light is on; `set_color_temperature` does not turn it on.
+Each settings or state write has a timestamp in whole seconds. The library chooses the latest of:
 
-The timestamp rewind probe, described below, measured these rules for the settings value only.
+- The current time.
+- Two seconds after the timestamp in the record being written.
+- Two seconds after the highest timestamp that handle has written to the same registry value.
 
-The library stamps each write 2 s after the stored timestamp, the same step Windows Settings uses,
-or at the current time if that is later. Each `Nightlight` handle, the value that
-`Nightlight::new()` returns, also stamps each write at least 2 s after the highest timestamp it has
-written, so it never moves the timestamp below its own earlier writes. Writing more often than once
-every 2 s therefore moves the timestamp ahead of real time, and the difference shrinks only as real
-time passes. While the timestamp is ahead, Windows still applies each library write, because each is
-stamped above the one before. The difference matters when another program writes the settings
-stamped with the current time: Windows then ignores each write stamped at or below the highest
-timestamp it applied before. A handle that wrote that timestamp stamps its next write above it, but
-a new handle's writes are ignored until real time or the handle's 2-second steps pass it.
+Frequent writes therefore move timestamps ahead of real time. The handle remembers its own highest
+timestamp, so it can keep increasing it even if the slider stores a lower one. A new handle loses
+that history. Its startup margin advances the first settings write by at least 699 s from the
+record's timestamp, instead of 2 s. **This is an estimate, not a guarantee:** it worked in the tested
+restart scenarios, but Windows does not expose the highest timestamp Explorer has applied. The guide
+explains the [margin and its cost](docs/color-temperature-transitions.md#one-handle-per-application-with-a-startup-margin).
 
-Keep one handle for the application's lifetime, and create it with
-`Nightlight::new().with_startup_margin()`. That handle stamps its first settings write at least
-699 s after the stored timestamp, so that an application that restarts soon after the user dragged
-the slider in Windows Settings during one of its fades does not have its first write ignored. During
-such a fade, a slider write can store a timestamp below the highest one Windows has applied: by up
-to 90 s in the probe described below, which measured fades at 30, 60, 144, and 240 writes per
-second. The registry does not store that highest timestamp. In the probe, right after the user
-released the slider during a fade, a new handle's first write was ignored without the margin and
-applied with it. The margin is an estimate of the worst case, not a bound; the
-[color temperature transitions
-guide](docs/color-temperature-transitions.md#one-handle-per-application-with-a-startup-margin)
-explains it.
+The [timestamp rewind probe](probes/timestamp-rewind/README.md) measured these behaviors on Windows
+11 build 26300:
 
-The [timestamp rewind probe](probes/timestamp-rewind/README.md), a program in this repository,
-measured these Windows behaviors on a live system. It writes Night Light in controlled sequences,
-asks an observer at the display which tint the screen shows, and records registry access with
-Process Monitor. Its cases cover moving the timestamp backward, writes below `Cloud`, `explorer.exe`
-restarts, preview timings, fades made with preview held on, write rates, and writes without preview.
-See the probe's README for the findings and how to rerun its cases.
+- `explorer.exe` behaved as if it remembered the highest settings timestamp it had applied and
+  ignored writes at or below it. Moving the stored timestamp backward can therefore stop display
+  updates.
+- Windows replaced settings writes below the separate `Cloud` timestamp with an earlier Windows
+  settings value. `Cloud` usually followed Windows Settings writes; one Explorer startup write
+  also updated it.
+- After a forced Explorer restart, plain temperature writes were ignored until a slider interaction
+  or a sufficiently long preview. About 9 ms worked in the measured trials; the library's brief
+  preview uses 50 ms.
 
-For an application that changes the temperature gradually, the [color temperature transitions
-guide](docs/color-temperature-transitions.md) prescribes which methods to call for one-off changes,
-ramps, and fades and how often to write. It also describes what happens when the user moves the
-slider during a gradual change.
+These are observations on one machine, not a documented Windows contract. The probe tested these
+filtering and replacement behaviors for settings only, not state. See its README for the evidence,
+exceptions, and instructions for reproducing the measurements.
 
 ### Types
 
