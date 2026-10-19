@@ -224,9 +224,11 @@ Keep one handle for the application's lifetime, and create it with
 699 s after the stored timestamp, so that an application that restarts soon after the user dragged
 the slider in Windows Settings during one of its fades does not have its first write ignored. During
 such a fade, a slider write can store a timestamp below the highest one Windows has applied: by up
-to 90 s in the probe described below, which measured fades at 30 and 240 writes per second. The
-registry does not store that highest timestamp. The margin is an estimate of the worst case, not a
-bound; the [color temperature transitions
+to 90 s in the probe described below, which measured fades at 30, 60, 144, and 240 writes per
+second. The registry does not store that highest timestamp. In the probe, right after the user
+released the slider during a fade, a new handle's first write was ignored without the margin and
+applied with it. The margin is an estimate of the worst case, not a bound; the
+[color temperature transitions
 guide](docs/color-temperature-transitions.md#one-handle-per-application-with-a-startup-margin)
 explains it.
 

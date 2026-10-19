@@ -58,7 +58,7 @@ Software\Microsoft\Windows\CurrentVersion\CloudStore\Store\DefaultAccount\Cloud\
 
 Contains: only the timestamp of the latest settings write by Windows Settings or by a restarted
 `explorer.exe`. In the probe's traces, `explorer.exe` wrote the record with the timestamp of each
-Windows Settings write up to 71 ms after that write. Once in those traces, a restarted
+Windows Settings write up to 78 ms after that write. Once in those traces, a restarted
 `explorer.exe` wrote the settings at startup and wrote that timestamp to the record 3.3 s later.
 Settings writes by any other program, such as one that uses this repository's `win-nightlight-lib`
 library, do not change it. The record has no payload, and its layout differs from the envelope of

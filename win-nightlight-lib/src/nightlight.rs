@@ -80,7 +80,7 @@ impl Nightlight {
     /// timestamp it has applied, and the registry does not store that
     /// timestamp. After the user drags the slider in Windows Settings during a
     /// fade, the stored timestamp can be below it, by up to 90 s in fades
-    /// measured at 30 and 240 writes per second. A handle that has not written
+    /// measured at 30 to 240 writes per second. A handle that has not written
     /// yet cannot tell how far below it the stored timestamp is. The margin is
     /// an estimate of the worst case for fades of up to 240 writes per second,
     /// not a bound.

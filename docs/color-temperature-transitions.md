@@ -87,22 +87,25 @@ after the lower timestamp that the slider stored, and `explorer.exe` ignores the
 Settings stamps each slider write 2 s after either its own previous write or a settings value it
 read, depending on when it last read the settings. A slider write's timestamp can therefore come
 from a read made well before the write, directly or through a series of Windows Settings' own
-writes. In the probe's four `drag-interference` runs, in which the observer dragged the slider
-during a held preview, a slider write's timestamp came from a read made up to 1,456 ms earlier in a
-run at 30 writes per second, and up to 191 ms earlier in the run at 240. In the two runs with the
-current library, one at each rate, slider writes were stamped up to 24 s and up to 90 s below the
-highest timestamp written before them. The registry does not store the highest timestamp that
-`explorer.exe` has applied, so a new handle cannot tell how far below it the stored timestamp is.
+writes. In the probe's fades at 30, 60, and 240 writes per second, during which the observer dragged
+the slider, a slider write's timestamp came from a read made up to 1,456 ms, 552 ms, and 191 ms
+earlier. At 144 writes per second, it came from a value stored up to 208 ms earlier, and the trace
+does not show when Windows Settings read that value. With the current library, slider writes were
+stamped up to 24 s, 52 s, 52 s, and 90 s below the highest timestamp written before them. The
+registry does not store the highest timestamp that `explorer.exe` has applied, so a new handle
+cannot tell how far below it the stored timestamp is.
 
 During that delay, each write of a fade at this guide's cap of 240 writes per second (see
 [Fades](#fades)) raises the highest timestamp by 2 s. The margin is therefore 2 s per write × 240
 writes per second × 1,456 ms, rounded up: the longest delay measured at any rate, combined with the
-cap. It is an estimate of the worst case, not a bound; the probe did not test fades between 30 and
-240 writes per second or an application restart right after a slider write. The margin adds up to
-699 s of lead once per handle, less than the about 13 minutes that the 30-second fade in
-[Fades](#fades) adds when it skips unchanged steps. The `wnl` command-line tool in this repository
-does not use the margin, because each `wnl` command creates a new handle, and the margin would add
-its lead on every command.
+cap. It is an estimate of the worst case, not a bound. The probe tested it at 60, 144, and 240
+writes per second by stopping a fade at the moment the user released the slider, as an application
+that exits would. Each release left the stored timestamp 6 s to 70 s below the highest timestamp the
+probe had written. Each time, a per-step drag through a new handle without the margin did not change
+the screen, and one through a new handle with the margin did. The margin adds up to 699 s of lead
+once per handle, less than the lead of about 13 minutes that the 30-second fade in [Fades](#fades)
+adds when it skips unchanged steps. The `wnl` command-line tool in this repository does not use the margin,
+because each `wnl` command creates a new handle, and the margin would add its lead on every command.
 
 ## One-off changes
 
@@ -233,20 +236,19 @@ To see how fast the lead grows, record it after each change: the stored timestam
   each slider write 2 s after either its own previous write or a settings value it read, depending
   on when it last read the settings, and it does not reread the settings right before the write. An
   application that writes more often therefore keeps the stored timestamp ahead of the slider's
-  writes, and Windows ignores nearly all of them. In the probe's four `drag-interference` runs,
-  three at 30 writes per second and one at 240, 225 of 238 slider writes were stamped at or below
-  the highest timestamp written before them. In the first two runs, the observer saw the fade
-  continue, and the screen rarely showed the slider's temperature, each time for a few frames; the
-  last two runs did not record what the screen showed.
-- **Effect on the fade:** most slider writes store a timestamp below the fade's latest write. In the
-  two probe runs with the current library, slider writes were stamped up to 24 s below at 30 writes
-  per second and up to 90 s below at 240. The handle stamps the fade's next write at least 2 s after
-  the highest timestamp it has written, so that write is stamped above the slider's write and above
-  the highest timestamp written before it. In those two runs, 0 of the probe's 8,122 writes were
-  stamped at or below the highest timestamp written before them. The first two runs used an earlier
-  0.5.0 development build that stamped 2 s after the stored timestamp. In them, 217 fade writes
-  after a slider write were stamped at or below the highest timestamp written before them, so
-  Windows presumably ignored them.
+  writes, and Windows ignores nearly all of them. In seven probe fades at 30 to 240 writes per
+  second, 273 of 286 slider writes were stamped at or below the highest timestamp written before
+  them. In the first two of those fades, the observer saw the fade continue, and the screen rarely
+  showed the slider's temperature, each time for a few frames; the others did not record what the
+  screen showed during the fade.
+- **Effect on the fade:** most slider writes store a timestamp below the fade's latest write: in the
+  probe, up to 90 s below with the current library. The handle stamps the fade's next write at least
+  2 s after the highest timestamp it has written, so that write is stamped above the slider's write
+  and above the highest timestamp written before it. In the two `drag-interference` runs with the
+  current library, 0 of the probe's 8,122 writes were stamped at or below the highest timestamp
+  written before them. The first two runs of that case used an earlier 0.5.0 development build that
+  stamped 2 s after the stored timestamp. In them, 217 fade writes after a slider write were stamped
+  at or below the highest timestamp written before them, so Windows presumably ignored them.
 - **When the user releases the slider:** Windows Settings usually turns preview off. The next
   `preview_color_temperature` call then returns `false` and turns preview back on, so the fade
   continues. In one probe run, Windows Settings did not turn preview off on release. A `false`
