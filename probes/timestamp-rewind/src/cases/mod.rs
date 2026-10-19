@@ -7,6 +7,7 @@ pub(crate) mod display;
 pub(crate) mod drag;
 pub(crate) mod plain;
 pub(crate) mod revert;
+pub(crate) mod slider;
 
 use crate::observer::Observer;
 use crate::session::Session;

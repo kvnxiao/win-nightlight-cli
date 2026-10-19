@@ -25,7 +25,7 @@ pub(crate) fn below_cloud(session: &mut Session) -> anyhow::Result<()> {
         .cloud_modified
         .checked_sub(1)
         .context("Cloud timestamp is zero")?;
-    registry::write_settings_modified(target)?;
+    session.rewind_settings_timestamp(target)?;
     let changes = snapshot::changes(&session.light, REVERT_WATCH, REVERT_POLL)?;
     say(&format!(
         "Wrote settings at {target}, one second below Cloud {}. Changes in the next {} ms:",
@@ -50,7 +50,7 @@ pub(crate) fn cloud_boundary(session: &mut Session) -> anyhow::Result<()> {
         let target = cloud
             .checked_add_signed(offset)
             .context("Cloud timestamp is out of range")?;
-        registry::write_settings_modified(target)?;
+        session.rewind_settings_timestamp(target)?;
         let changes = snapshot::changes(&session.light, REVERT_WATCH, REVERT_POLL)?;
         let kept = changes
             .iter()
@@ -80,7 +80,7 @@ pub(crate) fn refresh_window(session: &mut Session, passes: usize) -> anyhow::Re
         let target = registry::read_cloud_modified()?
             .checked_sub(1)
             .context("Cloud timestamp is zero")?;
-        registry::write_settings_modified(target)?;
+        session.rewind_settings_timestamp(target)?;
         std::thread::sleep(Duration::from_millis(delay_ms));
         registry::ordinary_refresh(&session.light, ColorTemperature::new(kelvin)?)?;
         std::thread::sleep(SETTLE);

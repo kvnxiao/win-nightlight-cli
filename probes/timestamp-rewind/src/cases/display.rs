@@ -48,7 +48,7 @@ fn burst_and_rewind(session: &mut Session, burst: u32) -> anyhow::Result<u64> {
 }
 
 pub(super) fn rewind_settings(session: &mut Session, target: u64) -> anyhow::Result<Snapshot> {
-    registry::write_settings_modified(target)?;
+    session.rewind_settings_timestamp(target)?;
     std::thread::sleep(REVERT_CHECK_DELAY);
     let rewound = session.snapshot("rewound")?;
     ensure!(
@@ -72,7 +72,7 @@ pub(super) fn refresh_above(session: &mut Session, peak: u64, tint: Tint) -> any
 
 pub(super) fn revert_below_cloud(session: &mut Session) -> anyhow::Result<Snapshot> {
     let cloud = registry::read_cloud_modified()?;
-    registry::write_settings_modified(cloud.checked_sub(1).context("Cloud timestamp is zero")?)?;
+    session.rewind_settings_timestamp(cloud.checked_sub(1).context("Cloud timestamp is zero")?)?;
     std::thread::sleep(REVERT_CHECK_DELAY);
     let reverted = session.snapshot("reverted")?;
     ensure!(

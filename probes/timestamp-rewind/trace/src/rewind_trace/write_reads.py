@@ -11,24 +11,20 @@ first read, in milliseconds; and the longest run of consecutive writes that
 explorer.exe did not read.
 """
 
-import argparse
 import statistics
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Final
 lazy from collections.abc import Iterable
 lazy from datetime import datetime
 
-from rewind_trace.reverts import run_window
 from rewind_trace.summary import (
     PROBE_PROCESS_PREFIX,
     Operation,
     Record,
     Store,
     SummaryRow,
-    parse_summary,
 )
+from rewind_trace.trace_input import in_window, load_trace_input
 
 READER: Final = "explorer.exe"
 
@@ -67,9 +63,7 @@ def find_reads(
         ):
             continue
         if row.is_settings_write and row.process.startswith(PROBE_PROCESS_PREFIX):
-            if window is None or (
-                row.utc is not None and window[0] <= row.utc <= window[1]
-            ):
+            if in_window(row, window):
                 unread[row.stamp] = (len(lags), row.ms)
                 lags.append(None)
         elif row.is_settings_write:
@@ -105,35 +99,7 @@ def format_report(report: ReadReport) -> list[str]:
 
 def main() -> int:
     """Print how many of the probe's settings writes explorer.exe read, and how soon."""
-    parser = argparse.ArgumentParser(
-        prog="write-reads",
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("summary", type=Path, help="trace summary (.tsv)")
-    parser.add_argument(
-        "results",
-        type=Path,
-        nargs="?",
-        help="results file (.jsonl) of the run whose writes to count",
-    )
-    arguments = parser.parse_args()
-    try:
-        with arguments.summary.open(newline="") as handle:
-            summary = parse_summary(handle)
-        window = None
-        if arguments.results is not None:
-            window = run_window(arguments.results.read_text().splitlines())
-    except ValueError as error:
-        print(f"write-reads: {error}", file=sys.stderr)  # noqa: T201 -- command-line error message
-        return 1
-    if window is not None and not summary.has_utc:
-        print(  # noqa: T201 -- command-line error message
-            f"{arguments.summary} has no UTC column; "
-            "rerun summarize-trace on its .pml capture",
-            file=sys.stderr,
-        )
-        return 1
-    for line in format_report(find_reads(summary.rows, window)):
+    trace = load_trace_input("write-reads", __doc__)
+    for line in format_report(find_reads(trace.summary.rows, trace.window)):
         print(line)  # noqa: T201 -- the report is this command's output
     return 0

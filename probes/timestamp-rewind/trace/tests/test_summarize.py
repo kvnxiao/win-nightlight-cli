@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 
 from rewind_trace.procmon import RegistryEvent
-from rewind_trace.summarize import settings_timestamp, summarize
+from rewind_trace.summarize import summarize, value_timestamp
 from rewind_trace.summary import Operation, Record, Store, SummaryRow
 
 CURRENT_SETTINGS = (
@@ -53,12 +53,12 @@ def event(
         pytest.param(Store.CLOUD, CLOUD_VALUE[:9], None, id="truncated-varint"),
     ],
 )
-def test_reads_settings_timestamp(
+def test_reads_value_timestamp(
     store: Store,
     data: bytes,
     expected: int | None,
 ) -> None:
-    assert settings_timestamp(store, data) == expected
+    assert value_timestamp(store, data) == expected
 
 
 def test_summarizes_night_light_value_access() -> None:
@@ -105,7 +105,7 @@ def test_summarizes_night_light_value_access() -> None:
             operation=Operation.WRITE,
             store=Store.CURRENT,
             record=Record.STATE,
-            stamp=None,
+            stamp=1792362613,
             length=16,
             utc=datetime(2026, 10, 19, 2, 10, 3, 5500, tzinfo=UTC),
         ),

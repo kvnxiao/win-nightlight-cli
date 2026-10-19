@@ -53,9 +53,13 @@ findings into rules for applications.
   [registry format](../../docs/nightlight-registry-format.md#outer-cloudstore-envelope) describes
   the value and its envelope.
 - **`win-nightlight-lib`:** the Rust library in this repository. It stamps each settings write with
-  `max(now, previous + 2)`: the later of real time and 2 s after the stored timestamp. The runs for
-  findings 1 to 12, including suite parts 1 to 4, used version 0.4.0. The runs for findings 13 to 16
-  used version 0.5.0, which adds the methods named below.
+  `max(now, previous + 2, highest + 2)`: the latest of real time, 2 s after the stored timestamp,
+  and 2 s after the highest timestamp the same library handle has written. After each write that
+  moves the timestamp back, the probe replaces its handle, so its later writes follow the stored
+  timestamp, as the writes of a newly started program do. The runs for findings 1 to 12, including
+  suite parts 1 to 4, used version 0.4.0. The runs for findings 13 to 16 used version 0.5.0, which
+  adds the methods named below. The 0.5.0 runs from 06:57 to 07:57 UTC on 2026-10-19 used an
+  earlier build that stamped `max(now, previous + 2)`.
 - **Preview:** a flag in the settings value that asks Windows to apply the stored temperature
   temporarily, even while Night Light is off. Windows Settings turns it on when the Night Light
   Strength slider is pressed and off when the slider is released.
@@ -384,8 +388,9 @@ the stored temperature: 5 of 5 trials.
   not show that it is safe, because the state in finding 12 is unexplained. A rewind followed by a
   0/0 preview refresh releases the stale-timestamp block only when `explorer.exe` reads the next
   value within about 0.7 ms of a preview-on value (finding 5).
-- **Any program that writes the settings:** keep the settings timestamp increasing, as `max(now,
-  previous + 2)` does. After a write that Windows reverts, wait at least 70 ms before the next
+- **Any program that writes the settings:** stamp each write above both the stored timestamp and
+  the highest timestamp the program has written, as `max(now, previous + 2, highest + 2)` does in
+  `win-nightlight-lib`. After a write that Windows reverts, wait at least 70 ms before the next
   write.
 - **After an `explorer.exe` restart:** ordinary refreshes and plain writes are ignored until a
   slider write or a preview that stays on for about 9 ms or longer (finding 7). A 50/50 preview
@@ -426,8 +431,9 @@ them. The Suite column gives the part and step of the suite that run the case.
 | `reverts-while-off [burst] --cloud-ahead` | Adds a slider write before the burst, which moves `Cloud` ahead of real time, and waits for real time to pass the stored timestamp before switching on.                                                                                                                                                                                                                | 4, 12    | 1.1                |
 | `drag-fade [--rate <hz>]`                 | Fades from neutral to red with a 1-second and a 30-second held drag at `rate` writes per second, by default the refresh rate of the fastest active display, and with 20 per-step drags 3 s apart. Makes the three fades, then each again after an `explorer.exe` restart. After each fade, asks how the screen changed and whether it ended on red.                    | 13       | 5.1                |
 | `drag-rate [rounds]`                      | Makes 1-second held drags from neutral to red at 30, 60, 144, and 240 writes per second and at the fastest display's refresh rate, leaving out rates above it. Runs 2 rounds by default, each in a new random order. Asks how each fade looked without naming its rate.                                                                                                | 13       | 5.2                |
-| `drag-interference`                       | Makes a 30-second held drag at 30 writes per second that fades between neutral and red while the observer drags and releases the slider in Windows Settings once. Then makes a per-step drag to yellow and asks whether it applied.                                                                                                                                    | 15       | 5.3                |
-| `drag-hold`                               | Turns preview on and keeps it on for at least 2 minutes. Writes a tint with preview on and asks whether it applied: at the start, after the observer switches Night Light off, after the observer opens the Night Light page, after an `explorer.exe` restart, and after 2 minutes. Then turns preview off.                                                            | 14       | 5.4                |
+| `slider-stamps`                           | Watches the observer press, drag, and release the slider in Windows Settings twice, then writes the stored settings back unchanged once per second for 10 s during a drag, then watches the observer switch Night Light off and on in Quick Settings and Windows Settings. Run it under `just trace`.                                                                  | 1, 15    | 5.3                |
+| `drag-interference`                       | Makes a 30-second held drag at 30 writes per second that fades between neutral and red while the observer drags and releases the slider in Windows Settings once. Then makes a per-step drag to yellow and asks whether it applied.                                                                                                                                    | 15       | 5.4                |
+| `drag-hold`                               | Turns preview on and keeps it on for at least 2 minutes. Writes a tint with preview on and asks whether it applied: at the start, after the observer switches Night Light off, after the observer opens the Night Light page, after an `explorer.exe` restart, and after 2 minutes. Then turns preview off.                                                            | 14       | 5.5                |
 | `plain-write [trials]`                    | Fades from neutral to red with 20 plain writes 3 s apart and asks how the screen changed. Then makes `trials` plain writes, 10 by default, in each of four conditions: normal (no block), after switching Night Light off and on, after an `explorer.exe` restart, and during a stale-timestamp block.                                                                 | 16       | 6.1                |
 | `write-while-off [trials]`                | Switches Night Light off, makes a plain write of a tint other than the one on screen, switches Night Light on, and asks which tint the screen shows. Repeats this `trials` times, 5 by default.                                                                                                                                                                        | 16       | 6.2                |
 | `watch [seconds]`                         | Prints each change to the settings and `Cloud` timestamps without writing.                                                                                                                                                                                                                                                                                             | —        | —                  |
@@ -486,7 +492,7 @@ ahead of real time and waits for Enter.
 
 `suite <part>` runs one of the six parts that together run every case except `watch`, and writes one
 results file per case. Parts 2 to 4 take about 2 minutes each. Part 1 takes longer because of the
-wait below. Part 5 takes about 13 minutes and part 6 about 5 minutes. The order keeps cases from
+wait below. Part 5 takes about 15 minutes and part 6 about 5 minutes. The order keeps cases from
 changing each other's conditions:
 
 - The `--cloud-ahead` replay runs first, while the settings timestamp is close to real time,
@@ -545,12 +551,14 @@ Each case writes `results/<case>-<unix seconds>.jsonl`, one JSON record per line
 4. `read` or `write`.
 5. The registry location: `Current`, for the values Night Light uses, or `Cloud`, for the `Cloud`
    record; and `settings` or `state`, for the settings or state value.
-6. The settings timestamp in the value.
+6. The timestamp in the settings or state value. Summaries written by earlier versions of
+   `summarize-trace` leave it empty for state values; rerun `summarize-trace` on the `.pml` capture
+   to add it.
 7. The value length in bytes. Process Monitor records only the first 16 bytes of a value, so the
    length is the only sign of the preview flag: a value with preview on is 3 bytes longer.
 8. The UTC time of the event.
 
-Three commands of the `trace/` project read the summaries:
+Four commands of the `trace/` project read the summaries:
 
 ```bash
 # What explorer.exe read during each preview refresh (findings 5 and 7)
@@ -559,6 +567,8 @@ uv run --locked --project trace preview-reads results/preview-timing-<n>.jsonl t
 uv run --locked --project trace reverts traces/trace-<m>.tsv [results/<case>-<n>.jsonl]
 # Whether explorer.exe read each probe write, and how soon (drag and plain-write cases)
 uv run --locked --project trace write-reads traces/trace-<m>.tsv [results/<case>-<n>.jsonl]
+# How each process stamped its writes, and what each slider write was stamped from (findings 1, 15)
+uv run --locked --project trace stamps traces/trace-<m>.tsv [results/<case>-<n>.jsonl]
 ```
 
 `trace/` is a uv project with Python 3.15. `just trace-check` runs its lint, type-check, test,
@@ -585,10 +595,10 @@ afterward, ran on its own at 07:57 UTC, and its 5 answers named the stored tint.
 
 Run suite parts 1 to 6 under `just trace`, as [Commands](#commands) shows. Then, for each case,
 compare its results file and the trace summary with the findings that [Cases](#cases) lists for it.
-`reverts` prints the trace measurements for finding 2, `preview-reads` for findings 5 and 7, and
-`write-reads` for findings 13 and 16. The counts in finding 15 come from the `SystemSettings.exe`
-rows of the trace summary. Results can differ on another Windows build, display, or observer; the
-`environment` record at the start of each results file names the build and display.
+`reverts` prints the trace measurements for finding 2, `preview-reads` for findings 5 and 7,
+`write-reads` for findings 13 and 16, and `stamps` for findings 1 and 15. Results can differ on
+another Windows build, display, or observer; the `environment` record at the start of each results
+file names the build and display.
 
 ### Runs before the suite
 

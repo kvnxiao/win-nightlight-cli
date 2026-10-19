@@ -130,7 +130,7 @@ fn neutral_to_red(index: u32, steps: u32) -> anyhow::Result<ColorTemperature> {
     interpolate(Tint::Neutral, Tint::Red, index, steps)
 }
 
-fn sleep_until(deadline: Instant) {
+pub(super) fn sleep_until(deadline: Instant) {
     if let Some(wait) = deadline.checked_duration_since(Instant::now()) {
         std::thread::sleep(wait);
     }

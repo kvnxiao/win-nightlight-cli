@@ -184,6 +184,17 @@ impl Session {
         self.highest_modified
     }
 
+    /// Store `modified` as the settings timestamp, even below the stored one,
+    /// and replace the library handle.
+    pub(crate) fn rewind_settings_timestamp(&mut self, modified: u64) -> anyhow::Result<()> {
+        registry::write_settings_modified(modified)?;
+        // A handle stamps each write above the highest timestamp it has
+        // written. The cases expect the writes after a rewind to follow the
+        // stored timestamp, as the writes of a newly started program do.
+        self.light = Nightlight::new();
+        Ok(())
+    }
+
     pub(crate) fn refresh(&mut self, tint: Tint, event: &str) -> anyhow::Result<Snapshot> {
         registry::ordinary_refresh(&self.light, ColorTemperature::new(tint.kelvin())?)?;
         self.snapshot(event)

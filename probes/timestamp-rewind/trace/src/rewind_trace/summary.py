@@ -2,7 +2,7 @@
 
 Each line has, in order: milliseconds since the first event, process name,
 process ID, operation, value (store and record, such as `Current/settings`),
-settings timestamp, value length in bytes, and UTC time. A summary can lack
+the timestamp in the value, value length in bytes, and UTC time. A summary can lack
 the last column or the last two; `Summary` records which columns it has.
 """
 
@@ -51,8 +51,8 @@ class SummaryRow:
         operation: Whether the process read or wrote the value.
         store: CloudStore subtree of the value.
         record: Night Light record of the value.
-        stamp: Settings timestamp in the value, or None for a state value or a
-            value without one.
+        stamp: Timestamp in the settings or state value, or None for a value
+            without one.
         length: Value length in bytes, or None when the summary has no length.
         utc: Event time, or None when the summary has no UTC time.
     """

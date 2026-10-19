@@ -18,15 +18,16 @@ OPERATIONS: Final = frozendict(
     RegQueryValue=Operation.READ,
     RegSetValue=Operation.WRITE,
 )
-# The timestamp follows these bytes in each layout; see the probe's src/envelope.rs.
+# The timestamp follows these bytes in each layout, for settings and state values
+# alike; see the probe's src/envelope.rs.
 TIMESTAMP_MARKERS: Final = frozendict(
     {Store.CURRENT: bytes.fromhex("2a06"), Store.CLOUD: bytes.fromhex("0a0026")},
 )
 FILETIME_EPOCH: Final = datetime(1601, 1, 1, tzinfo=UTC)
 
 
-def settings_timestamp(store: Store, data: bytes) -> int | None:
-    """Return the settings timestamp in a settings value, or None if it has none."""
+def value_timestamp(store: Store, data: bytes) -> int | None:
+    """Return the timestamp in a settings or state value, or None if it has none."""
     marker = TIMESTAMP_MARKERS[store]
     index = data.find(marker, 4)
     if index < 0:
@@ -56,9 +57,7 @@ def summarize(events: Iterable[RegistryEvent]) -> Iterator[SummaryRow]:
         store = Store.CLOUD if "\\Cloud\\" in event.path else Store.CURRENT
         if first is None:
             first = event.filetime
-        stamp = None
-        if record is Record.SETTINGS and event.data is not None:
-            stamp = settings_timestamp(store, event.data)
+        stamp = None if event.data is None else value_timestamp(store, event.data)
         yield SummaryRow(
             ms=(event.filetime - first) / 10_000,
             process=event.process_name,

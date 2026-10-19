@@ -42,7 +42,7 @@ const SUITE_PAUSE: Duration = Duration::from_secs(2);
 // - The drag cases in part 5 run after parts 1 to 4, because they move the
 //   settings timestamp hours ahead of real time, and `reverts-while-off
 //   --cloud-ahead` waits for real time to pass it.
-const SUITE: [(u8, Case); 28] = [
+const SUITE: [(u8, Case); 29] = [
     (
         1,
         Case::RevertsWhileOff {
@@ -137,6 +137,7 @@ const SUITE: [(u8, Case); 28] = [
     (4, Case::RestartExplorer),
     (5, Case::DragFade { rate: None }),
     (5, Case::DragRate { rounds: 2 }),
+    (5, Case::SliderStamps),
     (5, Case::DragInterference),
     (5, Case::DragHold),
     (6, Case::PlainWrite { trials: 10 }),
@@ -264,6 +265,10 @@ enum Case {
         #[arg(default_value_t = 2)]
         rounds: u32,
     },
+    /// Watch the observer drag the Windows Settings slider, with and without
+    /// probe writes, and switch Night Light in Quick Settings and Windows
+    /// Settings, for a trace of how Windows stamps those writes.
+    SliderStamps,
     /// Hold a slider drag while the observer drags the Windows Settings
     /// slider, then restore the probe's temperature with a per-step drag.
     DragInterference,
@@ -372,6 +377,7 @@ fn run(case: Case, observer: Observer) -> anyhow::Result<()> {
         Case::DragRate { rounds } => Session::run("drag-rate", observer, |session| {
             cases::drag::drag_rate(session, rounds)
         }),
+        Case::SliderStamps => Session::run("slider-stamps", observer, cases::slider::slider_stamps),
         Case::DragInterference => Session::run(
             "drag-interference",
             observer,
