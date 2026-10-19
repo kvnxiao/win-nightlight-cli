@@ -2,11 +2,15 @@ use crate::ColorTemperature;
 use crate::Result;
 use crate::Settings;
 use crate::State;
+use crate::cloudstore::MIN_MODIFIED_STEP_SECS;
 use crate::error::Repr;
 use crate::store::Key;
 use crate::store::RegistryStore;
 use crate::store::Store;
 use std::fmt;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -16,16 +20,36 @@ const CLEANUP_ATTEMPTS: usize = 3;
 // preview stays on for about 9 ms or longer. A click on the Windows Settings
 // slider keeps preview on for 51 to 97 ms.
 const APPLY_PREVIEW_HOLD: Duration = Duration::from_millis(50);
+// Windows Settings stamps each slider write 2 s after a value it read up to
+// this long before. Meanwhile, a fade at the transitions guide's cap of 240
+// writes per second moves the highest timestamp 2 s per write, so a slider
+// write can store a timestamp up to the margin below it.
+const SLIDER_READ_LAG_MS: u64 = 154;
+const MAX_FADE_WRITES_PER_SEC: u64 = 240;
+const STARTUP_MARGIN_SECS: u64 =
+    (MIN_MODIFIED_STEP_SECS * MAX_FADE_WRITES_PER_SEC * SLIDER_READ_LAG_MS).div_ceil(1000);
 
 /// Handle to the current user's Night Light settings and state.
 ///
 /// Settings (schedule and color temperature) and state (whether Night Light
 /// is on) are separate registry values. Temperature updates can read both
 /// values and write only settings; on/off updates write only state.
+///
+/// Each handle records the highest timestamp it has written to each value
+/// and stamps later writes above it. Writes of one value through one handle
+/// run one at a time, so their timestamps increase even when threads share
+/// the handle. Keep one handle for the application's lifetime and share it
+/// across threads, for example through an `Arc`.
 pub struct Nightlight {
     store: Box<dyn Store + Send + Sync>,
     clock: fn() -> SystemTime,
     sleep: fn(Duration),
+    startup_margin: bool,
+    // The highest timestamp written to each value, or 0 before the first
+    // write. Each write holds the lock from stamping until it records the
+    // new timestamp, so two threads cannot stamp the same timestamp.
+    settings_written: Mutex<u64>,
+    state_written: Mutex<u64>,
 }
 
 impl Nightlight {
@@ -42,7 +66,30 @@ impl Nightlight {
             store: Box::new(store),
             clock,
             sleep: std::thread::sleep,
+            startup_margin: false,
+            settings_written: Mutex::new(0),
+            state_written: Mutex::new(0),
         }
+    }
+
+    /// Stamp this handle's settings writes at least 74 s after the stored
+    /// timestamp until one succeeds.
+    ///
+    /// `explorer.exe` ignores settings writes stamped at or below the highest
+    /// timestamp it has applied, and the registry does not store that
+    /// timestamp. After the user drags the slider in Windows Settings during a
+    /// fade, the stored timestamp can be up to 74 s below it, for fades of up
+    /// to 240 writes per second. A handle that has not written yet cannot tell
+    /// how far below it the stored timestamp is.
+    ///
+    /// - Later writes follow [`write_settings`](Self::write_settings).
+    /// - The state value does not get the margin.
+    /// - Each handle that uses the margin adds up to 74 s to the settings
+    ///   timestamp's lead over real time.
+    #[must_use]
+    pub fn with_startup_margin(mut self) -> Self {
+        self.startup_margin = true;
+        self
     }
 
     /// Read the current settings.
@@ -64,10 +111,15 @@ impl Nightlight {
 
     /// Write `settings` with a new last-modified time.
     ///
-    /// The new last-modified time is the current time, or two seconds after
-    /// the time stored in `settings` if that is later. The time never moves
-    /// backward, because `explorer.exe` does not apply settings stamped at or
-    /// below the highest time it has applied.
+    /// The new last-modified time is the latest of the current time, two
+    /// seconds after the time stored in `settings`, and two seconds after the
+    /// highest time this handle has written to the settings.
+    /// [`with_startup_margin`](Self::with_startup_margin) raises the first
+    /// write further. The time never moves backward, because `explorer.exe`
+    /// does not apply settings stamped at or below the highest time it has
+    /// applied. Another writer, such as the slider in Windows Settings, can
+    /// store a lower time; this handle's next write is still stamped above
+    /// its own earlier writes.
     ///
     /// # Errors
     ///
@@ -82,8 +134,20 @@ impl Nightlight {
     /// [`ErrorKind::Registry`]: crate::ErrorKind::Registry
     pub fn write_settings(&self, settings: &Settings) -> Result<()> {
         let mut settings = settings.clone();
-        settings.stamp((self.clock)());
-        self.write(Key::Settings, &settings.to_bytes()?)
+        let mut highest = lock(&self.settings_written);
+        let step_secs = if self.startup_margin && *highest == 0 {
+            STARTUP_MARGIN_SECS
+        } else {
+            MIN_MODIFIED_STEP_SECS
+        };
+        let modified = settings.stamp(
+            (self.clock)(),
+            step_secs,
+            highest.saturating_add(MIN_MODIFIED_STEP_SECS),
+        );
+        self.write(Key::Settings, &settings.to_bytes()?)?;
+        *highest = modified;
+        Ok(())
     }
 
     /// Read the settings, apply `change`, and write them back if `change`
@@ -275,9 +339,10 @@ impl Nightlight {
     /// Write `state` with a new last-modified time.
     ///
     /// The last-modified time follows the same rule as
-    /// [`write_settings`](Self::write_settings). This does not record a
-    /// transition; use [`update_state`](Self::update_state) to turn Night
-    /// Light on or off.
+    /// [`write_settings`](Self::write_settings), with a separate record of the
+    /// highest time this handle has written to the state and without the
+    /// startup margin. This does not record a transition; use
+    /// [`update_state`](Self::update_state) to turn Night Light on or off.
     ///
     /// # Errors
     ///
@@ -350,8 +415,11 @@ impl Nightlight {
 
     fn write_state_at(&self, state: &State, now: SystemTime) -> Result<()> {
         let mut state = state.clone();
-        state.stamp(now);
-        self.write(Key::State, &state.to_bytes()?)
+        let mut highest = lock(&self.state_written);
+        let modified = state.stamp(now, highest.saturating_add(MIN_MODIFIED_STEP_SECS));
+        self.write(Key::State, &state.to_bytes()?)?;
+        *highest = modified;
+        Ok(())
     }
 
     // `windows-registry` sizes its buffer with one query and fills it with a
@@ -391,6 +459,12 @@ impl fmt::Debug for Nightlight {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Nightlight").finish_non_exhaustive()
     }
+}
+
+// A panic while the lock is held cannot leave the timestamp half-updated, so
+// a poisoned lock still holds a valid value.
+fn lock(highest: &Mutex<u64>) -> MutexGuard<'_, u64> {
+    highest.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 #[cfg(test)]
@@ -942,6 +1016,131 @@ mod tests {
             (Key::Settings, hex!("434201000A0201002A06BEE6C5D6062A2B0E2443420100CA140E1500CA1E0E0700CF28B231CA320E132E1100CA3C0E062E2600C2460100000000").to_vec()),
             (Key::Settings, hex!("434201000A0201002A06C0E6C5D6062A2B0E2143420100CA140E1500CA1E0E0700CF28B231CA320E132E1100CA3C0E062E260000000000").to_vec()),
         ]);
+    }
+
+    fn written_settings_times(store: &MemoryStore) -> Vec<Option<SystemTime>> {
+        written_settings(store)
+            .into_iter()
+            .map(|(_, _, modified)| modified)
+            .collect()
+    }
+
+    #[test]
+    fn settings_write_stamps_above_its_own_writes_after_a_lower_stored_time() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock_before_fixtures);
+        nightlight.start_preview().expect("preview starts");
+        nightlight
+            .preview_color_temperature(ColorTemperature::new(3400).expect("3400K is in range"))
+            .expect("step writes");
+        store.queue_reads(
+            Key::Settings,
+            vec![Ok(fixtures::SETTINGS_PREVIEWING.to_vec())],
+        );
+        nightlight.end_preview().expect("preview ends");
+        assert_eq!(
+            written_settings_times(&store),
+            [
+                Some(at(1_742_540_910)),
+                Some(at(1_742_540_912)),
+                Some(at(1_742_540_914)),
+            ]
+        );
+    }
+
+    #[test]
+    fn state_write_stamps_above_its_own_writes_after_a_lower_stored_time() {
+        let (nightlight, store) = nightlight(fixtures::STATE_INACTIVE, clock_before_fixtures);
+        nightlight.set_active(true).expect("state turns on");
+        store.queue_reads(Key::State, vec![Ok(fixtures::STATE_ACTIVE.to_vec())]);
+        nightlight.set_active(false).expect("state turns off");
+        assert_eq!(stored_state(&store).modified(), Some(at(1_742_670_477)));
+    }
+
+    #[test]
+    fn records_settings_and_state_timestamps_separately() {
+        let (nightlight, store) = nightlight(fixtures::STATE_INACTIVE, clock);
+        nightlight.toggle().expect("state toggles on");
+        nightlight.toggle().expect("state toggles off");
+        nightlight.start_preview().expect("preview starts");
+        assert_eq!(stored_state(&store).modified(), Some(at(1_800_000_002)));
+        assert_eq!(stored_settings(&store).modified(), Some(at(1_800_000_000)));
+    }
+
+    #[test]
+    fn threads_sharing_a_handle_write_increasing_timestamps() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        let nightlight = Nightlight::with_store(store.clone(), clock);
+        let write_previews = || {
+            for _ in 0..25 {
+                nightlight.start_preview().expect("preview starts");
+            }
+        };
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(write_previews);
+            }
+        });
+        let times = written_settings_times(&store);
+        assert_eq!(times.len(), 100);
+        assert!(
+            times
+                .windows(2)
+                .all(|pair| matches!(pair, [earlier, later] if earlier < later)),
+            "{times:?}"
+        );
+    }
+
+    #[test]
+    fn failed_write_does_not_raise_the_recorded_timestamp() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        store.queue_writes(Key::Settings, vec![Err(WIN32_ERROR(5))]);
+        let nightlight = Nightlight::with_store(store.clone(), clock_before_fixtures);
+        nightlight
+            .start_preview()
+            .expect_err("first write is denied");
+        nightlight.start_preview().expect("second write succeeds");
+        assert_eq!(
+            written_settings_times(&store),
+            [Some(at(1_742_540_910)), Some(at(1_742_540_910))]
+        );
+    }
+
+    #[test]
+    fn startup_margin_raises_only_the_first_settings_write() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        let nightlight =
+            Nightlight::with_store(store.clone(), clock_before_fixtures).with_startup_margin();
+        nightlight.start_preview().expect("preview starts");
+        nightlight.end_preview().expect("preview ends");
+        assert_eq!(
+            written_settings_times(&store),
+            [Some(at(1_742_540_982)), Some(at(1_742_540_984))]
+        );
+    }
+
+    #[test]
+    fn startup_margin_stays_until_a_settings_write_succeeds() {
+        let store = MemoryStore::with(&[(Key::Settings, fixtures::SETTINGS_SET_HOURS)]);
+        store.queue_writes(Key::Settings, vec![Err(WIN32_ERROR(5))]);
+        let nightlight =
+            Nightlight::with_store(store.clone(), clock_before_fixtures).with_startup_margin();
+        nightlight
+            .start_preview()
+            .expect_err("first write is denied");
+        nightlight.start_preview().expect("second write succeeds");
+        assert_eq!(
+            written_settings_times(&store),
+            [Some(at(1_742_540_982)), Some(at(1_742_540_982))]
+        );
+    }
+
+    #[test]
+    fn startup_margin_does_not_apply_to_state() {
+        let (nightlight, store) = nightlight(fixtures::STATE_INACTIVE, clock_before_fixtures);
+        let nightlight = nightlight.with_startup_margin();
+        nightlight.set_active(true).expect("state turns on");
+        assert_eq!(stored_state(&store).modified(), Some(at(1_742_670_475)));
     }
 
     #[test]

@@ -6,6 +6,7 @@ use crate::bond::CompactBinaryWriter;
 use crate::bond::UnknownFields;
 use crate::bond::expect_type;
 use crate::cloudstore::Envelope;
+use crate::cloudstore::MIN_MODIFIED_STEP_SECS;
 use crate::error::Repr;
 use crate::store::Key;
 use crate::time::filetime_from_system_time;
@@ -141,8 +142,8 @@ impl State {
         };
     }
 
-    pub(crate) fn stamp(&mut self, now: SystemTime) {
-        self.envelope.stamp(now);
+    pub(crate) fn stamp(&mut self, now: SystemTime, at_least: u64) -> u64 {
+        self.envelope.stamp(now, MIN_MODIFIED_STEP_SECS, at_least)
     }
 
     pub(crate) fn record_manual_transition(&mut self, now: SystemTime) {

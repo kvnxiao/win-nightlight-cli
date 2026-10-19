@@ -209,16 +209,26 @@ for:
 The timestamp rewind probe, described below, measured these rules for the settings value only.
 
 The library stamps each write 2 s after the stored timestamp, the same step Windows Settings uses,
-or at the current time if that is later. It never moves the timestamp backward. Writing more often
-than once every 2 s therefore moves the timestamp ahead of real time, and the difference shrinks
-only as real time passes. While the timestamp is ahead, Windows still applies each library write,
-because each is stamped above the one before. The difference matters when another program writes the
-settings stamped with the current time: Windows then ignores writes until real time catches up.
+or at the current time if that is later. Each `Nightlight` handle, the value that
+`Nightlight::new()` returns, also stamps each write at least 2 s after the highest timestamp it has
+written, so it never moves the timestamp below its own earlier writes. Writing more often than once
+every 2 s therefore moves the timestamp ahead of real time, and the difference shrinks only as real
+time passes. While the timestamp is ahead, Windows still applies each library write, because each is
+stamped above the one before. The difference matters when another program writes the settings
+stamped with the current time: Windows then ignores each write stamped at or below the highest
+timestamp it applied before. A handle that wrote that timestamp stamps its next write above it, but
+a new handle's writes are ignored until real time or the handle's 2-second steps pass it.
+
+Keep one handle for the application's lifetime, and create it with
+`Nightlight::new().with_startup_margin()`. That handle stamps its first settings write at least
+74 s after the stored timestamp. During a fade of up to 240 writes per second, a slider drag in
+Windows Settings can store a timestamp up to 74 s below the highest one Windows has applied, and
+the registry does not store that highest timestamp.
 
 The [timestamp rewind probe](probes/timestamp-rewind/README.md), a program in this repository,
-measured this behavior on a live system. It writes Night Light in controlled sequences, asks an
-observer at the display which tint the screen shows, and records registry access with Process
-Monitor. Its cases cover moving the timestamp backward, writes below `Cloud`, `explorer.exe`
+measured these Windows behaviors on a live system. It writes Night Light in controlled sequences,
+asks an observer at the display which tint the screen shows, and records registry access with
+Process Monitor. Its cases cover moving the timestamp backward, writes below `Cloud`, `explorer.exe`
 restarts, preview timings, fades made with preview held on, write rates, and writes without preview.
 See the probe's README for the findings and how to rerun its cases.
 

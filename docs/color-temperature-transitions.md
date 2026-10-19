@@ -11,9 +11,16 @@ observer which tint the screen shows. It ran on Windows 11 build 26300 with one 
 
 ## Terms
 
+- **Settings:** the Night Light settings registry value, not the Windows Settings app. It stores
+  the color temperature and the schedule. Whether Night Light is on is stored in a second value,
+  the state.
+- **Write:** one write of the settings.
 - **Slider:** the Strength slider on the Night Light page of Windows Settings.
-- **Write:** one write of the Night Light settings registry value, which stores the color
-  temperature and the schedule. Whether Night Light is on is stored in a second value, the state.
+- **Slider write:** a write that Windows Settings makes while the user presses, drags, or
+  releases the slider.
+- **Handle:** one `Nightlight` value, which the application creates with `Nightlight::new()`.
+- **Block:** a state in which `explorer.exe` ignores temperature changes, such as the restart
+  block described below.
 - **One-off change:** a change to one new temperature.
 - **Fade:** a gradual change that lasts up to 30 s.
 - **Ramp:** a gradual change that lasts longer than 30 s.
@@ -30,21 +37,24 @@ Whether a write changes the screen depends on three behaviors:
 - **Timestamp:** each write stores a last-modified time in whole seconds. `explorer.exe` ignores a
   write stamped at or below the highest timestamp it has applied. The library stamps each write 2 s
   after the stored timestamp, the step Windows Settings also uses, or at the current time if that is
-  later. A write therefore adds at most 2 s of lead. Real time removes lead at 1 s per second, so
-  writes 2 s or more apart do not make the lead grow.
+  later. Each handle also stamps each write at least 2 s after the highest timestamp it has written,
+  so when another writer, such as the slider, stores a lower timestamp, the handle does not stamp
+  its next write lower. Apart from the startup margin described below, a write therefore adds at
+  most 2 s of lead. Real time removes lead at 1 s per second, so writes 2 s or more apart do not
+  make the lead grow.
 - **Restart block:** after `explorer.exe` restarts, for example after a crash, it ignores
   temperature changes until a preview stays on for about 9 ms or longer, or until the user moves
   the slider. Switching Night Light on still shows the stored temperature during the block.
 
 ## Methods
 
-| Method                         | Writes                                                                                                                                                          | Use                 |
-| :----------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------ |
-| `apply_color_temperature(t)`   | While Night Light is on: `t` with preview on, then preview off after 50 ms. While it is off: `t` with preview off, once. No write when both are already stored. | A one-off change    |
-| `set_color_temperature(t)`     | `t` once, without changing preview. No write when `t` is already stored.                                                                                        | Each step of a ramp |
-| `start_preview()`              | Preview on, with the temperature unchanged.                                                                                                                     | The start of a fade |
-| `preview_color_temperature(t)` | `t` with preview on.                                                                                                                                            | Each step of a fade |
-| `end_preview()`                | Preview off, with the temperature unchanged.                                                                                                                    | The end of a fade   |
+| Method                         | Writes                                                                                                                                                                   | Use                 |
+| :----------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------ |
+| `apply_color_temperature(t)`   | While Night Light is on: `t` with preview on, then preview off after 50 ms. While it is off: `t` with preview off, once. No write when `t` is stored and preview is off. | A one-off change    |
+| `set_color_temperature(t)`     | `t` once, without changing preview. No write when `t` is already stored.                                                                                                 | Each step of a ramp |
+| `start_preview()`              | Preview on, with the temperature unchanged.                                                                                                                              | The start of a fade |
+| `preview_color_temperature(t)` | `t` with preview on.                                                                                                                                                     | Each step of a fade |
+| `end_preview()`                | Preview off, with the temperature unchanged.                                                                                                                             | The end of a fade   |
 
 This guide calls the preview that `apply_color_temperature` keeps on for 50 ms a brief preview, and
 the sequence from `start_preview` to `end_preview` a held preview. A held preview makes the same
@@ -62,6 +72,26 @@ writes as a press, drag, and release of the slider.
   a held preview, the screen shows each temperature as it is written, even while Night Light is off.
 - `end_preview` makes one attempt. If its write fails, preview stays on; call it again.
 
+## One handle per application, with a startup margin
+
+Create one `Nightlight` handle when the application starts, and use it for the application's
+lifetime. Share it across threads through an `Arc`. Each handle records the highest timestamp it
+has written to the settings and to the state. A second handle, or a new handle after the
+application restarts, starts with no record.
+
+Create the handle with `Nightlight::new().with_startup_margin()`. The handle then stamps its first
+settings write at least 74 s after the stored timestamp. The margin is for an application that
+restarts, and so creates a new handle, soon after the user dragged the slider during a fade. Windows
+Settings stamps each slider write 2 s after a value it read up to about 150 ms earlier, so during a
+fade at 240 writes per second, a slider write can store a timestamp about 74 s below the highest one
+`explorer.exe` has applied. The registry does not store that highest timestamp, so a new handle
+cannot tell how far below it the stored timestamp is.
+
+The margin adds up to 74 s of lead once per handle. The 74 s value follows from the measured
+timestamps; the probe did not test an application restart right after a slider write. The `wnl`
+command-line tool in this repository does not use the margin, because each `wnl` command creates a
+new handle, and the margin would add its lead on every command.
+
 ## One-off changes
 
 Call `apply_color_temperature`. While Night Light is on, its brief preview applies the temperature
@@ -72,8 +102,8 @@ restart. The `wnl temp` command in this repository makes this call.
 ## Ramps
 
 1. Make each step with `set_color_temperature`. Small steps, such as 10 K, make the change look
-   gradual: in the probe, a 30-second fade from 6500 K to 1200 K that changed in 10 K steps looked
-   gradual.
+   gradual: in the probe, a 30-second held preview from 6500 K to 1200 K that changed in 10 K steps
+   looked gradual.
 2. Make the first step, and one step about every minute after it, with `apply_color_temperature`
    instead. Its brief preview ends a restart block. After an `explorer.exe` restart that the
    application does not notice, the screen keeps the temperature that the new `explorer.exe` applied
@@ -86,9 +116,9 @@ Light is on. When Night Light turns on, the screen shows the stored temperature:
 
 The lead grows only when steps come less than 2 s apart. A ramp from 6500 K to 2700 K in 10 K steps
 has 380 steps: over 60 minutes, one every 9.5 s, and over 20 minutes, one every 3.2 s, so neither
-builds lead. Over 60 seconds, the steps come 158 ms apart, and the ramp ends about 12 minutes
-ahead of real time. A ramp that must build less lead needs fewer, larger steps; the probe did not
-test how large a step can be before a ramp looks stepped.
+builds lead. Over 60 seconds, the steps come 158 ms apart, and when the ramp ends, the timestamp is
+about 12 minutes ahead of real time. A ramp that must build less lead needs fewer, larger steps; the
+probe did not test how large a step can be before a ramp looks stepped.
 
 In the probe, writes without preview applied in 10 of 10 trials with no block, and in 10 of 10
 after Night Light was switched off and on. A sequence of 20 such writes, 3 s apart, changed the
@@ -167,16 +197,20 @@ looked gradual right after a restart.
 | Ramp step                               | 1                      | 2 s                 |
 | Ramp step with a brief preview          | 2                      | 4 s                 |
 | Fade with `n` written steps             | `n + 2`                | `2n + 4` s          |
+| First write of a handle with the margin | 1                      | 74 s                |
 
 A 1-second fade at 240 writes per second adds about 8 minutes of lead. During a lead, Windows still
 applies each library write, because each is stamped above the one before. The lead shrinks only as
 real time passes. A large lead matters when another program writes the settings stamped with the
 current time instead of the stored timestamp. That write moves the timestamp back, and
-`explorer.exe` then ignores writes until one is stamped above the highest timestamp it has applied.
-The wait lasts as long as the lead was ([probe finding
+`explorer.exe` then ignores each write stamped at or below the highest timestamp it has applied
+([probe finding
 3](../probes/timestamp-rewind/README.md#3-a-rewind-at-or-above-cloud-stays-in-the-registry-and-causes-a-stale-timestamp-block)).
-For the same reason, never move the timestamp back yourself, for example by writing the registry
-value directly.
+A handle that wrote that highest timestamp stamps its next write above it, so its writes still
+apply. A new handle, or another program that stamps 2 s after the stored timestamp, has its writes
+ignored until real time or its 2-second steps pass that highest timestamp; for a lead of hours, that
+can take hours. For the same reason, never move the timestamp back yourself, for example by writing
+the registry value directly.
 
 To see how fast the lead grows, record it after each change: the stored timestamp, which
 `read_settings` returns as `Settings::modified`, minus the current time.
@@ -190,9 +224,12 @@ To see how fast the lead grows, record it after each change: the stored timestam
   writes per second, 68 of 68 slider writes in one run and 113 of 126 in another were stamped at or
   below the highest timestamp. The observer saw the fade continue, and the screen rarely showed the
   slider's temperature, each time for a few frames.
-- **Effect on the fade:** each slider write stores its lower timestamp, so the application's next
-  few writes, stamped 2 s after it, can be at or below the highest timestamp too. In the probe, 80
-  and 137 fade writes were stamped that way in the two runs.
+- **Effect on the fade:** each slider write stores a timestamp below the fade's latest write. The
+  handle stamps the fade's next write at least 2 s after the highest timestamp it has written, so
+  that write is stamped above the slider's write and above the highest timestamp `explorer.exe`
+  has applied. The two probe runs used an earlier library build that stamped 2 s after the stored
+  timestamp. In them, 80 and 137 fade writes after a slider write were stamped at or below the
+  highest timestamp `explorer.exe` had applied.
 - **When the user releases the slider:** Windows Settings usually turns preview off. The next
   `preview_color_temperature` call then returns `false` and turns preview back on, so the fade
   continues. In one probe run, Windows Settings did not turn preview off on release, so the
@@ -216,3 +253,23 @@ the temperature the application wants on screen, which ends any preview. To keep
 temperature instead, read the settings and call `end_preview` if `Settings::is_previewing` returns
 `true`. The settings do not show whether a preview was left over or belongs to a drag the user is
 making at that moment; ending it cuts off such a drag, and the user can press the slider again.
+
+## When Windows ignores the application's writes
+
+If the application's writes succeed but the screen stops changing, `explorer.exe` is ignoring them,
+for example because it has applied a timestamp higher than any the application now writes. In the
+probe, two user actions made `explorer.exe` apply writes again:
+
+- **Restart `explorer.exe`.** The new `explorer.exe` applies the stored temperature at startup,
+  whatever its timestamp. It then ignores writes without preview until a preview stays on for about
+  9 ms or longer, so make the next change with `apply_color_temperature` while Night Light is on.
+  The probe ended `explorer.exe` with `taskkill /f /im explorer.exe` and started a new one with
+  `explorer.exe`; Task Manager's Restart command for Windows Explorer was not tested. The taskbar
+  disappears for a few seconds, and open File Explorer windows close.
+- **Sign out and back in.** In [probe finding
+  12](../probes/timestamp-rewind/README.md#12-in-one-run-the-display-ignored-settings-writes-until-a-sign-out-for-an-unknown-reason),
+  this ended a state in which `explorer.exe` ignored settings writes for an unknown reason. Unlike
+  an `explorer.exe` restart, it does not cause a restart block.
+
+The application can suggest these steps to the user. It should not restart `explorer.exe` itself,
+because the restart interrupts the user's work.

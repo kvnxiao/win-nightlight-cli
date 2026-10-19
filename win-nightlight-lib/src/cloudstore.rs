@@ -11,7 +11,7 @@ const OUTER_CONTAINER: u16 = 1;
 const CONTAINER_MODIFIED: u16 = 0;
 const CONTAINER_WRAPPER: u16 = 1;
 const WRAPPER_PAYLOAD: u16 = 1;
-const MIN_MODIFIED_STEP_SECS: u64 = 2;
+pub(crate) const MIN_MODIFIED_STEP_SECS: u64 = 2;
 
 /// `CloudStore` wrapper around one Night Light payload.
 ///
@@ -68,15 +68,18 @@ impl Envelope {
         self.modified
     }
 
-    /// Set the last-modified time for a write at `now`.
+    /// Set the last-modified time for a write at `now` to the latest of `now`,
+    /// `step_secs` after the stored time, and `at_least`, and return it.
     ///
     /// `explorer.exe` does not apply settings stamped at or below the highest
     /// timestamp it has applied, and Windows Settings advances the timestamp
-    /// by at least two seconds per write, so the new timestamp is never less
-    /// than the previous one plus two seconds.
-    pub(crate) fn stamp(&mut self, now: SystemTime) {
+    /// by at least two seconds per write, so callers pass a `step_secs` of at
+    /// least [`MIN_MODIFIED_STEP_SECS`].
+    pub(crate) fn stamp(&mut self, now: SystemTime, step_secs: u64, at_least: u64) -> u64 {
         self.modified = unix_secs_from_system_time(now)
-            .max(self.modified.saturating_add(MIN_MODIFIED_STEP_SECS));
+            .max(self.modified.saturating_add(step_secs))
+            .max(at_least);
+        self.modified
     }
 
     fn write_container(&self, writer: &mut CompactBinaryWriter, count: u32, payload: &[u8]) {
@@ -186,14 +189,18 @@ mod tests {
         );
     }
 
-    #[test_case(1_000, 2_000, 2_000; "clock ahead of stored time")]
-    #[test_case(1_000, 1_001, 1_002; "clock within two seconds")]
-    #[test_case(1_000, 500, 1_002; "clock behind stored time")]
-    #[test_case(u64::MAX, 0, u64::MAX; "saturates")]
-    fn stamps_modified_time(previous: u64, now: u64, expected: u64) {
+    #[test_case(1_000, 2_000, 2, 0, 2_000; "clock ahead of stored time")]
+    #[test_case(1_000, 1_001, 2, 0, 1_002; "clock within two seconds")]
+    #[test_case(1_000, 500, 2, 0, 1_002; "clock behind stored time")]
+    #[test_case(1_000, 500, 66, 0, 1_066; "larger step")]
+    #[test_case(1_000, 500, 2, 1_010, 1_010; "floor above the step")]
+    #[test_case(1_000, 2_000, 2, 1_010, 2_000; "clock above the floor")]
+    #[test_case(u64::MAX, 0, 2, 0, u64::MAX; "saturates")]
+    fn stamps_modified_time(previous: u64, now: u64, step: u64, at_least: u64, expected: u64) {
         let (mut envelope, _) = Envelope::decode(fixtures::STATE_LIVE).expect("fixture decodes");
         envelope.modified = previous;
-        envelope.stamp(UNIX_EPOCH + Duration::from_secs(now));
+        let stamped = envelope.stamp(UNIX_EPOCH + Duration::from_secs(now), step, at_least);
+        assert_eq!(stamped, expected);
         assert_eq!(envelope.modified(), expected);
     }
 }

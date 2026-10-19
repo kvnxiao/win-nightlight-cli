@@ -122,13 +122,30 @@ on build 26300:
 
 Windows Settings stamps each of its writes two seconds after the last timestamp it read or wrote. A
 writer that uses the same two-second step keeps the timestamp increasing: it sets the timestamp to
-the later of the current Unix time and the previous timestamp plus two seconds. `win-nightlight-lib`
-stamps the state value with the same rule; the probe measured the two behaviors above only for the
-settings value.
+the later of the current Unix time and the previous timestamp plus two seconds.
 
 ```
 modified = max(now_unix_seconds, previous_modified + 2)
 ```
+
+Another writer can store a lower timestamp than this writer's last one: during a slider drag,
+Windows Settings can store a timestamp below that of a program that writes more often. A writer
+whose writes must stay above `explorer.exe`'s maximum must therefore also stamp above its own
+earlier writes, because one of them may have set that maximum. `win-nightlight-lib` stamps each
+write with the following rule, where `highest_written` is the highest timestamp that the same
+`Nightlight` handle, one value that `Nightlight::new()` returns, has written to that value, or 0
+before its first write:
+
+```
+modified = max(now_unix_seconds, previous_modified + 2, highest_written + 2)
+```
+
+A handle created with `Nightlight::new().with_startup_margin()` stamps its first settings write at
+least `previous_modified + 74`; the [color temperature transitions
+guide](color-temperature-transitions.md#one-handle-per-application-with-a-startup-margin)
+explains the 74-second margin. The library stamps the state value with the same rule, without the
+margin. The probe measured the revert below `Cloud` and the stale-timestamp block only for the
+settings value.
 
 Rapid writes can advance this whole-second timestamp ahead of the clock. The difference between two
 such timestamps does not measure elapsed time. Reread the value before each subsequent write and

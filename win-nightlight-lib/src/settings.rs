@@ -283,8 +283,8 @@ impl Settings {
         self.previewing = previewing;
     }
 
-    pub(crate) fn stamp(&mut self, now: SystemTime) {
-        self.envelope.stamp(now);
+    pub(crate) fn stamp(&mut self, now: SystemTime, step_secs: u64, at_least: u64) -> u64 {
+        self.envelope.stamp(now, step_secs, at_least)
     }
 
     fn decode(data: &[u8]) -> Result<Self, BondError> {
